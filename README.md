@@ -222,7 +222,7 @@ type S3Client interface {
 
 ## How It Works
 
-1. Downloads the object to a temporary file (with 0600 permissions)
+1. Downloads the object to a temporary file
 2. Builds ObjectInfo struct from object metadata
 3. Calls your callback function with the metadata and temp file
 4. If callback returns true:

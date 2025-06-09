@@ -467,41 +467,6 @@ func TestTemporaryFileCleanup(t *testing.T) {
 	}
 }
 
-// Test temporary file permissions
-func TestTemporaryFilePermissions(t *testing.T) {
-	client := &mockS3Client{
-		getObjectFunc: func(input *s3.GetObjectInput) (*s3.GetObjectOutput, error) {
-			return &s3.GetObjectOutput{
-				Body: io.NopCloser(strings.NewReader("test content")),
-			}, nil
-		},
-		getObjectAclFunc: func(input *s3.GetObjectAclInput) (*s3.GetObjectAclOutput, error) {
-			return &s3.GetObjectAclOutput{}, nil
-		},
-		putObjectFunc: func(input *s3.PutObjectInput) (*s3.PutObjectOutput, error) {
-			return &s3.PutObjectOutput{}, nil
-		},
-	}
-
-	err := OverwriteS3Object(client, "test-bucket", "test-key", func(info ObjectInfo, tmpFile *os.File) (bool, error) {
-		// Check file permissions
-		stat, err := tmpFile.Stat()
-		if err != nil {
-			return false, err
-		}
-
-		mode := stat.Mode()
-		if mode.Perm() != 0600 {
-			t.Errorf("Expected file permissions 0600, got %o", mode.Perm())
-		}
-
-		return false, nil // Skip to avoid other operations
-	})
-
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-	}
-}
 
 // Test buildTaggingString
 func TestBuildTaggingString(t *testing.T) {

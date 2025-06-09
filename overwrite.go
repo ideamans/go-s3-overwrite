@@ -67,10 +67,6 @@ func OverwriteS3Object(
 		_ = os.Remove(tmpFile.Name())
 	}()
 
-	// Set file permissions to 0600
-	if err := tmpFile.Chmod(0600); err != nil {
-		return fmt.Errorf("failed to set temp file permissions: %w", err)
-	}
 
 	// Copy object content to temp file
 	if _, err := io.Copy(tmpFile, getResp.Body); err != nil {
@@ -207,10 +203,6 @@ func OverwriteS3ObjectWithAcl(
 		_ = os.Remove(tmpFile.Name())
 	}()
 
-	// Set file permissions to 0600
-	if err := tmpFile.Chmod(0600); err != nil {
-		return fmt.Errorf("failed to set temp file permissions: %w", err)
-	}
 
 	// Copy object content to temp file
 	if _, err := io.Copy(tmpFile, getResp.Body); err != nil {
