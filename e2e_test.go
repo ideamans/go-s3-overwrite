@@ -167,11 +167,11 @@ func TestE2E_OverwriteS3Object(t *testing.T) {
 		t.Errorf("CacheControl not preserved, got %s", *getResp.CacheControl)
 	}
 
-	// Check metadata (S3 returns metadata keys with capital first letter)
-	if val, ok := getResp.Metadata["Original"]; !ok || val != "true" {
+	// Check metadata (AWS SDK v2 returns metadata keys in lowercase)
+	if val, ok := getResp.Metadata["original"]; !ok || val != "true" {
 		t.Errorf("Original metadata not preserved, got metadata: %v", getResp.Metadata)
 	}
-	if val, ok := getResp.Metadata["Modified"]; !ok || val != "true" {
+	if val, ok := getResp.Metadata["modified"]; !ok || val != "true" {
 		t.Errorf("Modified metadata not added, got metadata: %v", getResp.Metadata)
 	}
 
@@ -825,12 +825,12 @@ func TestE2E_MetadataAndTagsWithSpecialCharacters(t *testing.T) {
 	}
 	defer getResp.Body.Close()
 
-	// Check special character metadata
+	// Check special character metadata (AWS SDK v2 returns lowercase keys)
 	expectedMetadata := map[string]string{
-		"User-Name":     "John Doe",
-		"Special-Chars": "!@#$%^&*()_+-=",
-		"Path":          "/path/to/file",
-		"Status":        "processed",
+		"user-name":     "John Doe",
+		"special-chars": "!@#$%^&*()_+-=",
+		"path":          "/path/to/file",
+		"status":        "processed",
 	}
 
 	for key, expected := range expectedMetadata {
@@ -1061,7 +1061,7 @@ func TestE2E_SpecificUserAndEmailGrantees(t *testing.T) {
 	}
 	defer getResp.Body.Close()
 
-	if val, ok := getResp.Metadata["Modified"]; !ok || val != "true" {
+	if val, ok := getResp.Metadata["modified"]; !ok || val != "true" {
 		t.Error("Metadata not updated correctly")
 	}
 }
