@@ -29,19 +29,26 @@ go get github.com/ideamans/go-s3-overwrite
 package main
 
 import (
+    "context"
     "fmt"
     "log"
+    "os"
+    "strings"
     
-    "github.com/aws/aws-sdk-go/aws/session"
-    "github.com/aws/aws-sdk-go/service/s3"
+    "github.com/aws/aws-sdk-go-v2/config"
+    "github.com/aws/aws-sdk-go-v2/service/s3"
     overwrite "github.com/ideamans/go-s3-overwrite"
 )
 
 func main() {
-    sess := session.Must(session.NewSession())
-    svc := s3.New(sess)
+    // AWS設定をロード
+    cfg, err := config.LoadDefaultConfig(context.TODO())
+    if err != nil {
+        log.Fatal(err)
+    }
+    svc := s3.NewFromConfig(cfg)
     
-    err := overwrite.OverwriteS3Object(svc, "my-bucket", "path/to/file.txt",
+    err = overwrite.OverwriteS3Object(context.Background(), svc, "my-bucket", "path/to/file.txt",
         func(info overwrite.ObjectInfo, srcFilePath string) (string, bool, error) {
             // オブジェクトのメタデータはinfoで利用可能
             fmt.Printf("処理中: %s (サイズ: %d バイト)\n", 
@@ -82,7 +89,7 @@ func main() {
 ### 例：シンプルACLの設定
 
 ```go
-err := overwrite.OverwriteS3ObjectWithAcl(svc, "my-bucket", "public/image.jpg", "public-read",
+err := overwrite.OverwriteS3ObjectWithAcl(context.Background(), svc, "my-bucket", "public/image.jpg", "public-read",
     func(info overwrite.ObjectInfo, srcFilePath string) (string, bool, error) {
         // 10MBより大きいファイルはスキップ
         if *info.ContentLength > 10*1024*1024 {
@@ -99,7 +106,27 @@ err := overwrite.OverwriteS3ObjectWithAcl(svc, "my-bucket", "public/image.jpg", 
 ### 例：JSONの整形
 
 ```go
-err := overwrite.OverwriteS3Object(svc, "my-bucket", "data/config.json",
+import (
+    "context"
+    "encoding/json"
+    "fmt"
+    "os"
+    "time"
+    
+    "github.com/aws/aws-sdk-go-v2/aws"
+    "github.com/aws/aws-sdk-go-v2/config"
+    "github.com/aws/aws-sdk-go-v2/service/s3"
+    overwrite "github.com/ideamans/go-s3-overwrite"
+)
+
+// AWS設定をロード
+ cfg, err := config.LoadDefaultConfig(context.TODO())
+if err != nil {
+    log.Fatal(err)
+}
+svc := s3.NewFromConfig(cfg)
+
+err = overwrite.OverwriteS3Object(context.Background(), svc, "my-bucket", "data/config.json",
     func(info overwrite.ObjectInfo, srcFilePath string) (string, bool, error) {
         // JSONを読み込み
         data, err := os.ReadFile(srcFilePath)
@@ -151,6 +178,7 @@ err := overwrite.OverwriteS3Object(svc, "my-bucket", "data/config.json",
 
 ```go
 func OverwriteS3Object(
+    ctx context.Context,
     client S3Client,
     bucket string,
     key string,
@@ -160,6 +188,7 @@ func OverwriteS3Object(
 
 **パラメータ:**
 
+- `ctx`: 操作のコンテキスト
 - `client`: S3Clientインターフェースを実装するAWS S3クライアント
 - `bucket`: S3バケット名
 - `key`: S3オブジェクトキー
@@ -171,6 +200,7 @@ func OverwriteS3Object(
 
 ```go
 func OverwriteS3ObjectWithAcl(
+    ctx context.Context,
     client S3Client,
     bucket string,
     key string,
@@ -181,6 +211,7 @@ func OverwriteS3ObjectWithAcl(
 
 **パラメータ:**
 
+- `ctx`: 操作のコンテキスト
 - `client`: S3Clientインターフェースを実装するAWS S3クライアント
 - `bucket`: S3バケット名
 - `key`: S3オブジェクトキー
@@ -229,15 +260,15 @@ type OverwriteCallback func(info ObjectInfo, srcFilePath string) (overwritingFil
 
 ### S3Clientインターフェース
 
-S3操作に必要な最小限のインターフェースです。AWS SDKの`*s3.S3`型はこのインターフェースを実装しています。
+S3操作に必要な最小限のインターフェースです。AWS SDK v2の`*s3.Client`型はこのインターフェースを実装しています。
 
 ```go
 type S3Client interface {
-    GetObject(input *s3.GetObjectInput) (*s3.GetObjectOutput, error)
-    GetObjectTagging(input *s3.GetObjectTaggingInput) (*s3.GetObjectTaggingOutput, error)
-    GetObjectAcl(input *s3.GetObjectAclInput) (*s3.GetObjectAclOutput, error)
-    PutObject(input *s3.PutObjectInput) (*s3.PutObjectOutput, error)
-    PutObjectAcl(input *s3.PutObjectAclInput) (*s3.PutObjectAclOutput, error)
+    GetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.Options)) (*s3.GetObjectOutput, error)
+    GetObjectTagging(ctx context.Context, params *s3.GetObjectTaggingInput, optFns ...func(*s3.Options)) (*s3.GetObjectTaggingOutput, error)
+    GetObjectAcl(ctx context.Context, params *s3.GetObjectAclInput, optFns ...func(*s3.Options)) (*s3.GetObjectAclOutput, error)
+    PutObject(ctx context.Context, params *s3.PutObjectInput, optFns ...func(*s3.Options)) (*s3.PutObjectOutput, error)
+    PutObjectAcl(ctx context.Context, params *s3.PutObjectAclInput, optFns ...func(*s3.Options)) (*s3.PutObjectAclOutput, error)
 }
 ```
 

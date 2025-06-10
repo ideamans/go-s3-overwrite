@@ -1,29 +1,33 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	overwrite "github.com/ideamans/go-s3-overwrite"
 )
 
 func main() {
-	// Create AWS session
-	sess := session.Must(session.NewSession())
-	svc := s3.New(sess)
+	// Create AWS configuration
+	cfg, err := config.LoadDefaultConfig(context.TODO())
+	if err != nil {
+		log.Fatal(err)
+	}
+	svc := s3.NewFromConfig(cfg)
 
 	// Example bucket and key - replace with your own
 	bucket := "my-bucket"
 	key := "data/config.json"
 
 	// Example: Format JSON file and preserve all attributes
-	err := overwrite.OverwriteS3Object(svc, bucket, key,
+	err = overwrite.OverwriteS3Object(context.Background(), svc, bucket, key,
 		func(info overwrite.ObjectInfo, srcFilePath string) (string, bool, error) {
 			fmt.Printf("Processing: %s/%s (size: %d bytes)\n",
 				info.Bucket, info.Key, *info.ContentLength)
@@ -82,7 +86,7 @@ func main() {
 
 	// Example 2: Set public-read ACL while preserving tags
 	publicKey := "public/data.json"
-	err = overwrite.OverwriteS3ObjectWithAcl(svc, bucket, publicKey, "public-read",
+	err = overwrite.OverwriteS3ObjectWithAcl(context.Background(), svc, bucket, publicKey, "public-read",
 		func(info overwrite.ObjectInfo, srcFilePath string) (string, bool, error) {
 			fmt.Printf("Making public: %s/%s\n", info.Bucket, info.Key)
 
@@ -109,9 +113,9 @@ func main() {
 	processLogs(svc, bucket, prefix)
 }
 
-func processLogs(svc *s3.S3, bucket, prefix string) {
+func processLogs(svc *s3.Client, bucket, prefix string) {
 	// List objects with prefix
-	resp, err := svc.ListObjectsV2(&s3.ListObjectsV2Input{
+	resp, err := svc.ListObjectsV2(context.Background(), &s3.ListObjectsV2Input{
 		Bucket: aws.String(bucket),
 		Prefix: aws.String(prefix),
 	})
@@ -126,7 +130,7 @@ func processLogs(svc *s3.S3, bucket, prefix string) {
 			continue // Skip empty files
 		}
 
-		err := overwrite.OverwriteS3Object(svc, bucket, *obj.Key,
+		err := overwrite.OverwriteS3Object(context.Background(), svc, bucket, *obj.Key,
 			func(info overwrite.ObjectInfo, srcFilePath string) (string, bool, error) {
 				// Example: Add processing timestamp to logs
 				content, err := os.ReadFile(srcFilePath)

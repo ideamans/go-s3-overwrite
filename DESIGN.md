@@ -2,7 +2,7 @@
 
 ## 1. 概要
 
-`go-s3-overwrite`は、AWS S3のオブジェクトを上書きする際に、メタデータ、タグ、ACLなどの属性を自動的に保持するシンプルなGoパッケージです。
+`go-s3-overwrite`は、AWS S3のオブジェクトを上書きする際に、メタデータ、タグ、ACLなどの属性を自動的に保持するシンプルなGoパッケージです。AWS SDK for Go v2を使用して実装されています。
 
 ### 1.1 解決する課題
 
@@ -21,6 +21,7 @@ S3のPutObject操作は内部的にオブジェクトを削除して再作成す
 2. **直感的**: コールバックベースの使いやすいAPI
 3. **安全**: 適切なエラーハンドリングとクリーンアップ
 4. **テスタブル**: モックを使った単体テストが容易
+5. **モダン**: AWS SDK for Go v2を使用し、コンテキストベースのAPI設計
 
 ## 2. パッケージ構成
 
@@ -29,7 +30,7 @@ github.com/[organization]/go-s3-overwrite/
 ├── README.md          # 英語版README
 ├── README_ja.md       # 日本語版README
 ├── LICENSE            # MITライセンス
-├── go.mod
+├── go.mod             # AWS SDK v2の依存関係を含む
 ├── go.sum
 ├── .env.example
 ├── .gitignore
@@ -79,7 +80,8 @@ type OverwriteCallback func(info ObjectInfo, srcFilePath string) (overwritingFil
 
 ```go
 func OverwriteS3Object(
-    client *s3.S3,
+    ctx context.Context,
+    client S3Client,
     bucket string,
     key string,
     callback OverwriteCallback,
@@ -88,7 +90,8 @@ func OverwriteS3Object(
 
 **パラメータ:**
 
-- `client`: AWS S3クライアント
+- `ctx`: コンテキスト
+- `client`: S3Clientインターフェースを実装するAWS S3クライアント
 - `bucket`: S3バケット名
 - `key`: S3オブジェクトキー
 - `callback`: 処理を行うコールバック関数
@@ -107,7 +110,8 @@ func OverwriteS3Object(
 
 ```go
 func OverwriteS3ObjectWithAcl(
-    client *s3.S3,
+    ctx context.Context,
+    client S3Client,
     bucket string,
     key string,
     acl string,
@@ -117,7 +121,8 @@ func OverwriteS3ObjectWithAcl(
 
 **パラメータ:**
 
-- `client`: AWS S3クライアント
+- `ctx`: コンテキスト
+- `client`: S3Clientインターフェースを実装するAWS S3クライアント
 - `bucket`: S3バケット名
 - `key`: S3オブジェクトキー
 - `acl`: シンプルACL（"private", "public-read", "public-read-write", "authenticated-read"）
@@ -150,6 +155,7 @@ func OverwriteS3ObjectWithAcl(
 package main
 
 import (
+    "context"
     "encoding/json"
     "fmt"
     "io"
@@ -157,17 +163,22 @@ import (
     "os"
     "time"
     
-    "github.com/aws/aws-sdk-go/aws/session"
-    "github.com/aws/aws-sdk-go/service/s3"
+    "github.com/aws/aws-sdk-go-v2/aws"
+    "github.com/aws/aws-sdk-go-v2/config"
+    "github.com/aws/aws-sdk-go-v2/service/s3"
     overwrite "github.com/[organization]/go-s3-overwrite"
 )
 
 func main() {
-    sess := session.Must(session.NewSession())
-    svc := s3.New(sess)
+    // AWS設定をロード
+    cfg, err := config.LoadDefaultConfig(context.TODO())
+    if err != nil {
+        log.Fatal(err)
+    }
+    svc := s3.NewFromConfig(cfg)
     
     // JSONファイルを整形して上書き
-    err := overwrite.OverwriteS3Object(svc, "my-bucket", "data/config.json",
+    err = overwrite.OverwriteS3Object(context.Background(), svc, "my-bucket", "data/config.json",
         func(info overwrite.ObjectInfo, srcFilePath string) (string, bool, error) {
             fmt.Printf("Processing: %s/%s (size: %d bytes)\n", 
                 info.Bucket, info.Key, *info.ContentLength)
@@ -232,11 +243,11 @@ func main() {
 
 ```go
 type mockS3Client struct {
-    GetObjectFunc        func(*s3.GetObjectInput) (*s3.GetObjectOutput, error)
-    GetObjectTaggingFunc func(*s3.GetObjectTaggingInput) (*s3.GetObjectTaggingOutput, error)
-    GetObjectAclFunc     func(*s3.GetObjectAclInput) (*s3.GetObjectAclOutput, error)
-    PutObjectFunc        func(*s3.PutObjectInput) (*s3.PutObjectOutput, error)
-    PutObjectAclFunc     func(*s3.PutObjectAclInput) (*s3.PutObjectAclOutput, error)
+    GetObjectFunc        func(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.Options)) (*s3.GetObjectOutput, error)
+    GetObjectTaggingFunc func(ctx context.Context, params *s3.GetObjectTaggingInput, optFns ...func(*s3.Options)) (*s3.GetObjectTaggingOutput, error)
+    GetObjectAclFunc     func(ctx context.Context, params *s3.GetObjectAclInput, optFns ...func(*s3.Options)) (*s3.GetObjectAclOutput, error)
+    PutObjectFunc        func(ctx context.Context, params *s3.PutObjectInput, optFns ...func(*s3.Options)) (*s3.PutObjectOutput, error)
+    PutObjectAclFunc     func(ctx context.Context, params *s3.PutObjectAclInput, optFns ...func(*s3.Options)) (*s3.PutObjectAclOutput, error)
 }
 ```
 
@@ -359,7 +370,37 @@ AWS_REGION=us-east-1
 }
 ```
 
-## 9. ライセンス
+## 9. AWS SDK v2への移行
+
+### 9.1 主な変更点
+
+1. **コンテキストサポート**: すべてのAPI呼び出しで`context.Context`を第一引数として受け取る
+2. **設定の読み込み**: `session.NewSession()`の代わりに`config.LoadDefaultConfig()`を使用
+3. **クライアント作成**: `s3.New(sess)`の代わりに`s3.NewFromConfig(cfg)`を使用
+4. **インターフェース変更**: S3Clientインターフェースがコンテキストとオプション関数を含むように更新
+
+### 9.2 依存関係
+
+```go
+module github.com/ideamans/go-s3-overwrite
+
+go 1.22
+
+require (
+    github.com/aws/aws-sdk-go-v2 v1.32.6
+    github.com/aws/aws-sdk-go-v2/config v1.28.5
+    github.com/aws/aws-sdk-go-v2/service/s3 v1.71.0
+)
+```
+
+### 9.3 移行の利点
+
+- **パフォーマンス向上**: SDK v2は効率的な実装により高速化
+- **型安全性の向上**: より厳密な型定義
+- **コンテキストベース**: タイムアウトやキャンセレーションの適切な処理
+- **モジュラー設計**: 必要な機能のみをインポート可能
+
+## 10. ライセンス
 
 MIT License
 
