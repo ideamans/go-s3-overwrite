@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"os"
 	"time"
@@ -25,32 +24,32 @@ func main() {
 
 	// Example: Format JSON file and preserve all attributes
 	err := overwrite.OverwriteS3Object(svc, bucket, key,
-		func(info overwrite.ObjectInfo, tmpFile *os.File) (bool, error) {
+		func(info overwrite.ObjectInfo, srcFilePath string) (string, bool, error) {
 			fmt.Printf("Processing: %s/%s (size: %d bytes)\n",
 				info.Bucket, info.Key, *info.ContentLength)
 
 			// Skip files larger than 10MB
 			if *info.ContentLength > 10*1024*1024 {
 				fmt.Println("Skipping: file too large")
-				return false, nil
+				return "", false, nil
 			}
 
 			// Read JSON content
-			data, err := io.ReadAll(tmpFile)
+			data, err := os.ReadFile(srcFilePath)
 			if err != nil {
-				return false, err
+				return "", false, err
 			}
 
 			// Parse JSON
 			var jsonData interface{}
 			if err := json.Unmarshal(data, &jsonData); err != nil {
-				return false, fmt.Errorf("invalid JSON: %w", err)
+				return "", false, fmt.Errorf("invalid JSON: %w", err)
 			}
 
 			// Format with indentation
 			formatted, err := json.MarshalIndent(jsonData, "", "  ")
 			if err != nil {
-				return false, err
+				return "", false, err
 			}
 
 			// Add metadata
@@ -60,16 +59,19 @@ func main() {
 			info.Metadata["formatted"] = aws.String("true")
 			info.Metadata["formatted-at"] = aws.String(time.Now().Format(time.RFC3339))
 
-			// Write formatted JSON back to temp file
-			if _, err := tmpFile.Seek(0, 0); err != nil {
-				return false, err
+			// Create new file with formatted JSON
+			formattedFile, err := os.CreateTemp("", "formatted-*.json")
+			if err != nil {
+				return "", false, err
 			}
-			if err := tmpFile.Truncate(0); err != nil {
-				return false, err
-			}
-			_, err = tmpFile.Write(formatted)
+			defer formattedFile.Close()
 
-			return true, err
+			if _, err := formattedFile.Write(formatted); err != nil {
+				os.Remove(formattedFile.Name())
+				return "", false, err
+			}
+
+			return formattedFile.Name(), true, nil
 		})
 
 	if err != nil {
@@ -81,11 +83,11 @@ func main() {
 	// Example 2: Set public-read ACL while preserving tags
 	publicKey := "public/data.json"
 	err = overwrite.OverwriteS3ObjectWithAcl(svc, bucket, publicKey, "public-read",
-		func(info overwrite.ObjectInfo, tmpFile *os.File) (bool, error) {
+		func(info overwrite.ObjectInfo, srcFilePath string) (string, bool, error) {
 			fmt.Printf("Making public: %s/%s\n", info.Bucket, info.Key)
 
 			// Just changing ACL, no content modification needed
-			// But we could modify content here if needed
+			// Return the same file path to preserve content
 
 			// Add metadata to track when it was made public
 			if info.Metadata == nil {
@@ -93,7 +95,7 @@ func main() {
 			}
 			info.Metadata["made-public"] = aws.String(time.Now().Format(time.RFC3339))
 
-			return true, nil
+			return srcFilePath, false, nil
 		})
 
 	if err != nil {
@@ -125,25 +127,28 @@ func processLogs(svc *s3.S3, bucket, prefix string) {
 		}
 
 		err := overwrite.OverwriteS3Object(svc, bucket, *obj.Key,
-			func(info overwrite.ObjectInfo, tmpFile *os.File) (bool, error) {
+			func(info overwrite.ObjectInfo, srcFilePath string) (string, bool, error) {
 				// Example: Add processing timestamp to logs
-				content, err := io.ReadAll(tmpFile)
+				content, err := os.ReadFile(srcFilePath)
 				if err != nil {
-					return false, err
+					return "", false, err
 				}
 
 				// Add timestamp header
 				header := fmt.Sprintf("# Processed at %s\n", time.Now().Format(time.RFC3339))
 				newContent := append([]byte(header), content...)
 
-				// Write back
-				if _, err := tmpFile.Seek(0, 0); err != nil {
-					return false, err
+				// Create new file with processed content
+				processedFile, err := os.CreateTemp("", "processed-*.log")
+				if err != nil {
+					return "", false, err
 				}
-				if err := tmpFile.Truncate(0); err != nil {
-					return false, err
+				defer processedFile.Close()
+
+				if _, err := processedFile.Write(newContent); err != nil {
+					os.Remove(processedFile.Name())
+					return "", false, err
 				}
-				_, err = tmpFile.Write(newContent)
 
 				// Update metadata
 				if info.Metadata == nil {
@@ -151,7 +156,7 @@ func processLogs(svc *s3.S3, bucket, prefix string) {
 				}
 				info.Metadata["processed"] = aws.String("true")
 
-				return true, err
+				return processedFile.Name(), true, nil
 			})
 
 		if err != nil {

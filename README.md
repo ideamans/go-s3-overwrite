@@ -42,27 +42,35 @@ func main() {
     svc := s3.New(sess)
     
     err := overwrite.OverwriteS3Object(svc, "my-bucket", "path/to/file.txt",
-        func(info overwrite.ObjectInfo, tmpFile *os.File) (bool, error) {
+        func(info overwrite.ObjectInfo, srcFilePath string) (string, bool, error) {
             // Object metadata is available in info
             fmt.Printf("Processing: %s (size: %d bytes)\n", 
                 info.Key, *info.ContentLength)
             
-            // Read and modify the file content
-            content, err := io.ReadAll(tmpFile)
+            // Read the file content
+            content, err := os.ReadFile(srcFilePath)
             if err != nil {
-                return false, err
+                return "", false, err
             }
             
             // Process the content (example: convert to uppercase)
             modified := strings.ToUpper(string(content))
             
-            // Write back to temp file
-            tmpFile.Seek(0, 0)
-            tmpFile.Truncate(0)
-            tmpFile.WriteString(modified)
+            // Create a new file with modified content
+            modifiedFile, err := os.CreateTemp("", "modified-*.txt")
+            if err != nil {
+                return "", false, err
+            }
+            defer modifiedFile.Close()
             
-            // Return true to overwrite, false to skip
-            return true, nil
+            if _, err := modifiedFile.WriteString(modified); err != nil {
+                os.Remove(modifiedFile.Name())
+                return "", false, err
+            }
+            
+            // Return the path to the modified file to overwrite, or "" to skip
+            // autoRemove = true to automatically clean up the temporary file
+            return modifiedFile.Name(), true, nil
         })
     
     if err != nil {
@@ -75,15 +83,16 @@ func main() {
 
 ```go
 err := overwrite.OverwriteS3ObjectWithAcl(svc, "my-bucket", "public/image.jpg", "public-read",
-    func(info overwrite.ObjectInfo, tmpFile *os.File) (bool, error) {
+    func(info overwrite.ObjectInfo, srcFilePath string) (string, bool, error) {
         // Skip files larger than 10MB
         if *info.ContentLength > 10*1024*1024 {
-            return false, nil
+            return "", false, nil
         }
         
         // Process image optimization here...
+        // For example, return the same file if no changes needed
         
-        return true, nil
+        return srcFilePath, false, nil
     })
 ```
 
@@ -91,22 +100,22 @@ err := overwrite.OverwriteS3ObjectWithAcl(svc, "my-bucket", "public/image.jpg", 
 
 ```go
 err := overwrite.OverwriteS3Object(svc, "my-bucket", "data/config.json",
-    func(info overwrite.ObjectInfo, tmpFile *os.File) (bool, error) {
+    func(info overwrite.ObjectInfo, srcFilePath string) (string, bool, error) {
         // Read JSON
-        data, err := io.ReadAll(tmpFile)
+        data, err := os.ReadFile(srcFilePath)
         if err != nil {
-            return false, err
+            return "", false, err
         }
         
         var jsonData interface{}
         if err := json.Unmarshal(data, &jsonData); err != nil {
-            return false, fmt.Errorf("invalid JSON: %w", err)
+            return "", false, fmt.Errorf("invalid JSON: %w", err)
         }
         
         // Format with indentation
         formatted, err := json.MarshalIndent(jsonData, "", "  ")
         if err != nil {
-            return false, err
+            return "", false, err
         }
         
         // Add metadata
@@ -116,12 +125,19 @@ err := overwrite.OverwriteS3Object(svc, "my-bucket", "data/config.json",
         info.Metadata["formatted"] = aws.String("true")
         info.Metadata["formatted-at"] = aws.String(time.Now().Format(time.RFC3339))
         
-        // Write formatted JSON
-        tmpFile.Seek(0, 0)
-        tmpFile.Truncate(0)
-        _, err = tmpFile.Write(formatted)
+        // Create new file with formatted JSON
+        formattedFile, err := os.CreateTemp("", "formatted-*.json")
+        if err != nil {
+            return "", false, err
+        }
+        defer formattedFile.Close()
         
-        return true, err
+        if _, err := formattedFile.Write(formatted); err != nil {
+            os.Remove(formattedFile.Name())
+            return "", false, err
+        }
+        
+        return formattedFile.Name(), true, nil
     })
 ```
 
@@ -195,16 +211,17 @@ type ObjectInfo struct {
 Callback function signature for processing objects.
 
 ```go
-type OverwriteCallback func(info ObjectInfo, tmpFile *os.File) (bool, error)
+type OverwriteCallback func(info ObjectInfo, srcFilePath string) (overwritingFilePath string, autoRemove bool, err error)
 ```
 
 **Parameters:**
 - `info`: Object metadata
-- `tmpFile`: Temporary file containing the object's content (readable and writable)
+- `srcFilePath`: Path to the temporary file containing the object's content
 
 **Returns:**
-- `bool`: true to overwrite the object, false to skip
-- `error`: Any error that occurred during processing
+- `overwritingFilePath`: Path to the file to upload (return empty string "" to skip overwrite)
+- `autoRemove`: If true, the file at `overwritingFilePath` will be automatically removed after upload (only if different from `srcFilePath`)
+- `err`: Any error that occurred during processing
 
 ### S3Client Interface
 
@@ -224,10 +241,10 @@ type S3Client interface {
 
 1. Downloads the object to a temporary file
 2. Builds ObjectInfo struct from object metadata
-3. Calls your callback function with the metadata and temp file
-4. If callback returns true:
+3. Calls your callback function with the metadata and temp file path
+4. If callback returns a non-empty file path:
    - Fetches existing tags and ACL
-   - Uploads the modified content with preserved attributes
+   - Uploads the file content from the returned path with preserved attributes
    - Restores WRITE permissions if needed (via PutObjectAcl)
 5. Always cleans up the temporary file
 

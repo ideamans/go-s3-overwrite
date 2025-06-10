@@ -110,7 +110,7 @@ func TestOverwriteS3Object_Success(t *testing.T) {
 	}
 
 	callbackCalled := false
-	err := OverwriteS3Object(client, "test-bucket", "test-key", func(info ObjectInfo, tmpFile *os.File) (bool, error) {
+	err := OverwriteS3Object(client, "test-bucket", "test-key", func(info ObjectInfo, srcFilePath string) (string, bool, error) {
 		callbackCalled = true
 
 		// Verify ObjectInfo
@@ -125,26 +125,27 @@ func TestOverwriteS3Object_Success(t *testing.T) {
 		}
 
 		// Verify file content
-		data, err := io.ReadAll(tmpFile)
+		data, err := os.ReadFile(srcFilePath)
 		if err != nil {
-			return false, err
+			return "", false, err
 		}
 		if string(data) != content {
 			t.Errorf("Expected content '%s', got '%s'", content, string(data))
 		}
 
-		// Write modified content
-		if _, err := tmpFile.Seek(0, 0); err != nil {
-			return false, err
+		// Create a new file with modified content
+		modifiedFile, err := os.CreateTemp("", "modified-*.tmp")
+		if err != nil {
+			return "", false, err
 		}
-		if err := tmpFile.Truncate(0); err != nil {
-			return false, err
-		}
-		if _, err := tmpFile.WriteString("modified content"); err != nil {
-			return false, err
+		defer modifiedFile.Close()
+
+		if _, err := modifiedFile.WriteString("modified content"); err != nil {
+			os.Remove(modifiedFile.Name())
+			return "", false, err
 		}
 
-		return true, nil
+		return modifiedFile.Name(), true, nil
 	})
 
 	if err != nil {
@@ -171,9 +172,9 @@ func TestOverwriteS3Object_Skip(t *testing.T) {
 		},
 	}
 
-	err := OverwriteS3Object(client, "test-bucket", "test-key", func(info ObjectInfo, tmpFile *os.File) (bool, error) {
-		// Return false to skip overwrite
-		return false, nil
+	err := OverwriteS3Object(client, "test-bucket", "test-key", func(info ObjectInfo, srcFilePath string) (string, bool, error) {
+		// Return empty string to skip overwrite
+		return "", false, nil
 	})
 
 	if err != nil {
@@ -222,8 +223,9 @@ func TestOverwriteS3Object_WithWritePermission(t *testing.T) {
 		},
 	}
 
-	err := OverwriteS3Object(client, "test-bucket", "test-key", func(info ObjectInfo, tmpFile *os.File) (bool, error) {
-		return true, nil
+	err := OverwriteS3Object(client, "test-bucket", "test-key", func(info ObjectInfo, srcFilePath string) (string, bool, error) {
+		// Return the same file to overwrite
+		return srcFilePath, false, nil
 	})
 
 	if err != nil {
@@ -314,11 +316,11 @@ func TestOverwriteS3Object_Errors(t *testing.T) {
 			client := &mockS3Client{}
 			tt.setupMock(client)
 
-			err := OverwriteS3Object(client, "bucket", "key", func(info ObjectInfo, tmpFile *os.File) (bool, error) {
+			err := OverwriteS3Object(client, "bucket", "key", func(info ObjectInfo, srcFilePath string) (string, bool, error) {
 				if tt.name == "Callback error" {
-					return false, errors.New("callback failed")
+					return "", false, errors.New("callback failed")
 				}
-				return true, nil
+				return srcFilePath, false, nil
 			})
 
 			if err == nil {
@@ -368,18 +370,20 @@ func TestOverwriteS3ObjectWithAcl_Success(t *testing.T) {
 				},
 			}
 
-			err := OverwriteS3ObjectWithAcl(client, "test-bucket", "test-key", acl, func(info ObjectInfo, tmpFile *os.File) (bool, error) {
-				// Modify content
-				if _, err := tmpFile.Seek(0, 0); err != nil {
-					return false, err
+			err := OverwriteS3ObjectWithAcl(client, "test-bucket", "test-key", acl, func(info ObjectInfo, srcFilePath string) (string, bool, error) {
+				// Create a new file with modified content
+				modifiedFile, err := os.CreateTemp("", "modified-*.tmp")
+				if err != nil {
+					return "", false, err
 				}
-				if err := tmpFile.Truncate(0); err != nil {
-					return false, err
+				defer modifiedFile.Close()
+
+				if _, err := modifiedFile.WriteString("modified content"); err != nil {
+					os.Remove(modifiedFile.Name())
+					return "", false, err
 				}
-				if _, err := tmpFile.WriteString("modified content"); err != nil {
-					return false, err
-				}
-				return true, nil
+
+				return modifiedFile.Name(), true, nil
 			})
 
 			if err != nil {
@@ -405,9 +409,9 @@ func TestOverwriteS3ObjectWithAcl_Skip(t *testing.T) {
 		},
 	}
 
-	err := OverwriteS3ObjectWithAcl(client, "test-bucket", "test-key", "private", func(info ObjectInfo, tmpFile *os.File) (bool, error) {
-		// Return false to skip overwrite
-		return false, nil
+	err := OverwriteS3ObjectWithAcl(client, "test-bucket", "test-key", "private", func(info ObjectInfo, srcFilePath string) (string, bool, error) {
+		// Return empty string to skip overwrite
+		return "", false, nil
 	})
 
 	if err != nil {
@@ -416,6 +420,235 @@ func TestOverwriteS3ObjectWithAcl_Skip(t *testing.T) {
 	if putObjectCalled {
 		t.Error("PutObject should not be called when callback returns false")
 	}
+}
+
+// Test autoRemove functionality
+func TestAutoRemove(t *testing.T) {
+	var createdFilePath string
+
+	client := &mockS3Client{
+		getObjectFunc: func(input *s3.GetObjectInput) (*s3.GetObjectOutput, error) {
+			return &s3.GetObjectOutput{
+				Body: io.NopCloser(strings.NewReader("test content")),
+			}, nil
+		},
+		getObjectAclFunc: func(input *s3.GetObjectAclInput) (*s3.GetObjectAclOutput, error) {
+			return &s3.GetObjectAclOutput{}, nil
+		},
+		putObjectFunc: func(input *s3.PutObjectInput) (*s3.PutObjectOutput, error) {
+			return &s3.PutObjectOutput{}, nil
+		},
+	}
+
+	// Test with autoRemove = true
+	err := OverwriteS3Object(client, "test-bucket", "test-key", func(info ObjectInfo, srcFilePath string) (string, bool, error) {
+		// Create a new temporary file
+		tmpFile, err := os.CreateTemp("", "autoremove-test-*.tmp")
+		if err != nil {
+			return "", false, err
+		}
+		tmpFile.Close()
+		createdFilePath = tmpFile.Name()
+		
+		// Write some content
+		if err := os.WriteFile(createdFilePath, []byte("new content"), 0600); err != nil {
+			os.Remove(createdFilePath)
+			return "", false, err
+		}
+		
+		return createdFilePath, true, nil // autoRemove = true
+	})
+
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Check that the file was automatically removed
+	if _, err := os.Stat(createdFilePath); !os.IsNotExist(err) {
+		t.Error("File with autoRemove=true was not automatically cleaned up")
+		os.Remove(createdFilePath) // Clean up manually if test fails
+	}
+
+	// Test with autoRemove = false
+	err = OverwriteS3Object(client, "test-bucket", "test-key", func(info ObjectInfo, srcFilePath string) (string, bool, error) {
+		// Create a new temporary file
+		tmpFile, err := os.CreateTemp("", "no-autoremove-test-*.tmp")
+		if err != nil {
+			return "", false, err
+		}
+		tmpFile.Close()
+		createdFilePath = tmpFile.Name()
+		
+		// Write some content
+		if err := os.WriteFile(createdFilePath, []byte("new content"), 0600); err != nil {
+			os.Remove(createdFilePath)
+			return "", false, err
+		}
+		
+		return createdFilePath, false, nil // autoRemove = false
+	})
+
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Check that the file still exists
+	if _, err := os.Stat(createdFilePath); os.IsNotExist(err) {
+		t.Error("File with autoRemove=false was incorrectly removed")
+	} else {
+		// Clean up manually
+		os.Remove(createdFilePath)
+	}
+}
+
+// Test autoRemove edge cases
+func TestAutoRemoveEdgeCases(t *testing.T) {
+	client := &mockS3Client{
+		getObjectFunc: func(input *s3.GetObjectInput) (*s3.GetObjectOutput, error) {
+			return &s3.GetObjectOutput{
+				Body: io.NopCloser(strings.NewReader("test content")),
+			}, nil
+		},
+		getObjectAclFunc: func(input *s3.GetObjectAclInput) (*s3.GetObjectAclOutput, error) {
+			return &s3.GetObjectAclOutput{}, nil
+		},
+		putObjectFunc: func(input *s3.PutObjectInput) (*s3.PutObjectOutput, error) {
+			return &s3.PutObjectOutput{}, nil
+		},
+	}
+
+	t.Run("autoRemove with same srcFilePath", func(t *testing.T) {
+		// Test that autoRemove=true does NOT remove the file when it's the same as srcFilePath
+		// This test verifies the logic, not the actual file existence (since defer will clean it up)
+		autoRemoveCalled := false
+		originalPath := ""
+		
+		// Create a custom client that tracks if the file would be removed
+		testClient := &mockS3Client{
+			getObjectFunc: client.getObjectFunc,
+			getObjectAclFunc: client.getObjectAclFunc,
+			putObjectFunc: func(input *s3.PutObjectInput) (*s3.PutObjectOutput, error) {
+				// At this point, check if the file still exists
+				if originalPath != "" {
+					if _, err := os.Stat(originalPath); os.IsNotExist(err) {
+						autoRemoveCalled = true
+					}
+				}
+				return &s3.PutObjectOutput{}, nil
+			},
+		}
+		
+		err := OverwriteS3Object(testClient, "test-bucket", "test-key", func(info ObjectInfo, srcFilePath string) (string, bool, error) {
+			originalPath = srcFilePath
+			// Return the same file path with autoRemove=true
+			return srcFilePath, true, nil
+		})
+
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+
+		// The file should NOT have been removed by autoRemove logic
+		if autoRemoveCalled {
+			t.Error("autoRemove logic incorrectly tried to remove srcFilePath when it was the same as overwritingFilePath")
+		}
+	})
+
+	t.Run("autoRemove with empty path", func(t *testing.T) {
+		// Test that autoRemove=true with empty path doesn't cause issues
+		err := OverwriteS3Object(client, "test-bucket", "test-key", func(info ObjectInfo, srcFilePath string) (string, bool, error) {
+			// Return empty path (skip) with autoRemove=true
+			return "", true, nil
+		})
+
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+	})
+
+	t.Run("autoRemove in OverwriteS3ObjectWithAcl", func(t *testing.T) {
+		// Test autoRemove functionality in OverwriteS3ObjectWithAcl
+		var createdFilePath string
+		err := OverwriteS3ObjectWithAcl(client, "test-bucket", "test-key", "private", func(info ObjectInfo, srcFilePath string) (string, bool, error) {
+			// Create a new temporary file
+			tmpFile, err := os.CreateTemp("", "acl-autoremove-test-*.tmp")
+			if err != nil {
+				return "", false, err
+			}
+			tmpFile.Close()
+			createdFilePath = tmpFile.Name()
+			
+			// Write some content
+			if err := os.WriteFile(createdFilePath, []byte("new content"), 0600); err != nil {
+				os.Remove(createdFilePath)
+				return "", false, err
+			}
+			
+			return createdFilePath, true, nil // autoRemove = true
+		})
+
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+
+		// Check that the file was automatically removed
+		if _, err := os.Stat(createdFilePath); !os.IsNotExist(err) {
+			t.Error("File with autoRemove=true was not automatically cleaned up in OverwriteS3ObjectWithAcl")
+			os.Remove(createdFilePath) // Clean up manually if test fails
+		}
+	})
+
+	t.Run("autoRemove cleanup happens after upload", func(t *testing.T) {
+		// Test that file is removed AFTER successful upload, not before
+		var fileExistsDuringUpload bool
+		createdFilePath := ""
+		
+		testClient := &mockS3Client{
+			getObjectFunc: client.getObjectFunc,
+			getObjectAclFunc: client.getObjectAclFunc,
+			putObjectFunc: func(input *s3.PutObjectInput) (*s3.PutObjectOutput, error) {
+				// Check if the file exists during upload
+				if createdFilePath != "" {
+					if _, err := os.Stat(createdFilePath); err == nil {
+						fileExistsDuringUpload = true
+					}
+				}
+				return &s3.PutObjectOutput{}, nil
+			},
+		}
+		
+		err := OverwriteS3Object(testClient, "test-bucket", "test-key", func(info ObjectInfo, srcFilePath string) (string, bool, error) {
+			// Create a new temporary file
+			tmpFile, err := os.CreateTemp("", "upload-timing-test-*.tmp")
+			if err != nil {
+				return "", false, err
+			}
+			tmpFile.Close()
+			createdFilePath = tmpFile.Name()
+			
+			// Write some content
+			if err := os.WriteFile(createdFilePath, []byte("test content"), 0600); err != nil {
+				os.Remove(createdFilePath)
+				return "", false, err
+			}
+			
+			return createdFilePath, true, nil // autoRemove = true
+		})
+
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+
+		if !fileExistsDuringUpload {
+			t.Error("File was removed before upload completed")
+		}
+		
+		// File should be removed after upload
+		if _, err := os.Stat(createdFilePath); !os.IsNotExist(err) {
+			t.Error("File was not removed after upload")
+			os.Remove(createdFilePath)
+		}
+	})
 }
 
 // Test temporary file cleanup
@@ -437,9 +670,9 @@ func TestTemporaryFileCleanup(t *testing.T) {
 	}
 
 	// Test successful case - temp file should be cleaned up
-	err := OverwriteS3Object(client, "test-bucket", "test-key", func(info ObjectInfo, tmpFile *os.File) (bool, error) {
-		tmpFileName = tmpFile.Name()
-		return true, nil
+	err := OverwriteS3Object(client, "test-bucket", "test-key", func(info ObjectInfo, srcFilePath string) (string, bool, error) {
+		tmpFileName = srcFilePath
+		return srcFilePath, false, nil
 	})
 
 	if err != nil {
@@ -452,9 +685,9 @@ func TestTemporaryFileCleanup(t *testing.T) {
 	}
 
 	// Test error case - temp file should still be cleaned up
-	err = OverwriteS3Object(client, "test-bucket", "test-key", func(info ObjectInfo, tmpFile *os.File) (bool, error) {
-		tmpFileName = tmpFile.Name()
-		return false, errors.New("intentional error")
+	err = OverwriteS3Object(client, "test-bucket", "test-key", func(info ObjectInfo, srcFilePath string) (string, bool, error) {
+		tmpFileName = srcFilePath
+		return "", false, errors.New("intentional error")
 	})
 
 	if err == nil {
