@@ -42,27 +42,35 @@ func main() {
     svc := s3.New(sess)
     
     err := overwrite.OverwriteS3Object(svc, "my-bucket", "path/to/file.txt",
-        func(info overwrite.ObjectInfo, tmpFile *os.File) (bool, error) {
+        func(info overwrite.ObjectInfo, srcFilePath string) (string, bool, error) {
             // オブジェクトのメタデータはinfoで利用可能
             fmt.Printf("処理中: %s (サイズ: %d バイト)\n", 
                 info.Key, *info.ContentLength)
             
-            // ファイル内容を読み込んで変更
-            content, err := io.ReadAll(tmpFile)
+            // ファイル内容を読み込む
+            content, err := os.ReadFile(srcFilePath)
             if err != nil {
-                return false, err
+                return "", false, err
             }
             
             // 内容を処理（例：大文字に変換）
             modified := strings.ToUpper(string(content))
             
-            // 一時ファイルに書き戻し
-            tmpFile.Seek(0, 0)
-            tmpFile.Truncate(0)
-            tmpFile.WriteString(modified)
+            // 変更された内容で新しいファイルを作成
+            modifiedFile, err := os.CreateTemp("", "modified-*.txt")
+            if err != nil {
+                return "", false, err
+            }
+            defer modifiedFile.Close()
             
-            // trueを返すと上書き、falseを返すとスキップ
-            return true, nil
+            if _, err := modifiedFile.WriteString(modified); err != nil {
+                os.Remove(modifiedFile.Name())
+                return "", false, err
+            }
+            
+            // 変更されたファイルのパスを返して上書き、または""を返してスキップ
+            // autoRemove = true で一時ファイルを自動的にクリーンアップ
+            return modifiedFile.Name(), true, nil
         })
     
     if err != nil {
@@ -75,15 +83,16 @@ func main() {
 
 ```go
 err := overwrite.OverwriteS3ObjectWithAcl(svc, "my-bucket", "public/image.jpg", "public-read",
-    func(info overwrite.ObjectInfo, tmpFile *os.File) (bool, error) {
+    func(info overwrite.ObjectInfo, srcFilePath string) (string, bool, error) {
         // 10MBより大きいファイルはスキップ
         if *info.ContentLength > 10*1024*1024 {
-            return false, nil
+            return "", false, nil
         }
         
         // ここで画像の最適化処理など...
+        // 例えば、変更が不要な場合は同じファイルを返す
         
-        return true, nil
+        return srcFilePath, false, nil
     })
 ```
 
@@ -91,22 +100,22 @@ err := overwrite.OverwriteS3ObjectWithAcl(svc, "my-bucket", "public/image.jpg", 
 
 ```go
 err := overwrite.OverwriteS3Object(svc, "my-bucket", "data/config.json",
-    func(info overwrite.ObjectInfo, tmpFile *os.File) (bool, error) {
+    func(info overwrite.ObjectInfo, srcFilePath string) (string, bool, error) {
         // JSONを読み込み
-        data, err := io.ReadAll(tmpFile)
+        data, err := os.ReadFile(srcFilePath)
         if err != nil {
-            return false, err
+            return "", false, err
         }
         
         var jsonData interface{}
         if err := json.Unmarshal(data, &jsonData); err != nil {
-            return false, fmt.Errorf("無効なJSON: %w", err)
+            return "", false, fmt.Errorf("無効なJSON: %w", err)
         }
         
         // インデント付きで整形
         formatted, err := json.MarshalIndent(jsonData, "", "  ")
         if err != nil {
-            return false, err
+            return "", false, err
         }
         
         // メタデータを追加
@@ -116,12 +125,19 @@ err := overwrite.OverwriteS3Object(svc, "my-bucket", "data/config.json",
         info.Metadata["formatted"] = aws.String("true")
         info.Metadata["formatted-at"] = aws.String(time.Now().Format(time.RFC3339))
         
-        // 整形したJSONを書き込み
-        tmpFile.Seek(0, 0)
-        tmpFile.Truncate(0)
-        _, err = tmpFile.Write(formatted)
+        // 整形されたJSONで新しいファイルを作成
+        formattedFile, err := os.CreateTemp("", "formatted-*.json")
+        if err != nil {
+            return "", false, err
+        }
+        defer formattedFile.Close()
         
-        return true, err
+        if _, err := formattedFile.Write(formatted); err != nil {
+            os.Remove(formattedFile.Name())
+            return "", false, err
+        }
+        
+        return formattedFile.Name(), true, nil
     })
 ```
 
@@ -197,18 +213,19 @@ type ObjectInfo struct {
 オブジェクトを処理するコールバック関数のシグネチャです。
 
 ```go
-type OverwriteCallback func(info ObjectInfo, tmpFile *os.File) (bool, error)
+type OverwriteCallback func(info ObjectInfo, srcFilePath string) (overwritingFilePath string, autoRemove bool, err error)
 ```
 
 **パラメータ:**
 
 - `info`: オブジェクトのメタデータ
-- `tmpFile`: オブジェクトの内容を含む一時ファイル（読み書き可能）
+- `srcFilePath`: オブジェクトの内容を含む一時ファイルへのパス
 
 **戻り値:**
 
-- `bool`: trueでオブジェクトを上書き、falseでスキップ
-- `error`: 処理中に発生したエラー
+- `overwritingFilePath`: アップロードするファイルのパス（空文字列""を返すと上書きをスキップ）
+- `autoRemove`: trueの場合、`overwritingFilePath`のファイルはアップロード後に自動的に削除されます（`srcFilePath`と異なる場合のみ）
+- `err`: 処理中に発生したエラー
 
 ### S3Clientインターフェース
 
@@ -228,10 +245,10 @@ type S3Client interface {
 
 1. オブジェクトを一時ファイルにダウンロード
 2. オブジェクトメタデータからObjectInfo構造体を構築
-3. メタデータと一時ファイルでコールバック関数を呼び出し
-4. コールバックがtrueを返した場合：
+3. メタデータと一時ファイルのパスでコールバック関数を呼び出し
+4. コールバックが空でないファイルパスを返した場合：
    - 既存のタグとACLを取得
-   - 保持された属性で変更されたコンテンツをアップロード
+   - 返されたパスからファイル内容を保持された属性でアップロード
    - 必要に応じてWRITE権限を復元（PutObjectAcl経由）
 5. 一時ファイルを必ずクリーンアップ
 

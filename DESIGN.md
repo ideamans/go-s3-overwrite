@@ -65,7 +65,12 @@ type ObjectInfo struct {
 }
 
 // OverwriteCallback defines the callback function signature
-type OverwriteCallback func(info ObjectInfo, tmpFile *os.File) (bool, error)
+// The callback receives object info and the path to the source file.
+// It returns:
+// - overwritingFilePath: the path to the file to upload (empty string to skip overwrite)
+// - autoRemove: if true, the file will be automatically removed after upload (only if different from srcFilePath)
+// - err: any error that occurred
+type OverwriteCallback func(info ObjectInfo, srcFilePath string) (overwritingFilePath string, autoRemove bool, err error)
 ```
 
 ### 3.2 OverwriteS3Object
@@ -91,9 +96,10 @@ func OverwriteS3Object(
 **コールバック関数:**
 
 - 引数1: オブジェクトのメタデータ情報
-- 引数2: ダウンロードされた一時ファイル（読み書き可能）
-- 戻り値1: true=上書き実行、false=スキップ
-- 戻り値2: エラー（エラーが返された場合、関数全体もそのエラーを返す）
+- 引数2: ダウンロードされた一時ファイルへのパス
+- 戻り値1: アップロードするファイルのパス（空文字列""で上書きをスキップ）
+- 戻り値2: 自動削除フラグ（trueの場合、アップロード後にファイルを自動削除。ただしsrcFilePathと異なる場合のみ）
+- 戻り値3: エラー（エラーが返された場合、関数全体もそのエラーを返す）
 
 ### 3.3 OverwriteS3ObjectWithAcl
 
@@ -124,11 +130,11 @@ func OverwriteS3ObjectWithAcl(
 1. GetObjectでオブジェクトをダウンロード
 2. 一時ファイルに保存（権限0600）
 3. ObjectInfo構造体を構築
-4. コールバック関数を呼び出し
-5. trueが返された場合：
+4. コールバック関数を呼び出し（一時ファイルのパスを渡す）
+5. 空でないファイルパスが返された場合：
    - GetObjectTaggingでタグを取得
    - GetObjectAcl でACLを取得（OverwriteS3Objectの場合）
-   - 一時ファイルの内容でPutObject実行
+   - 返されたファイルパスの内容でPutObject実行
    - 必要に応じてPutObjectAclでWRITE権限を復元
 6. 一時ファイルをクリーンアップ
 
@@ -162,30 +168,30 @@ func main() {
     
     // JSONファイルを整形して上書き
     err := overwrite.OverwriteS3Object(svc, "my-bucket", "data/config.json",
-        func(info overwrite.ObjectInfo, tmpFile *os.File) (bool, error) {
+        func(info overwrite.ObjectInfo, srcFilePath string) (string, bool, error) {
             fmt.Printf("Processing: %s/%s (size: %d bytes)\n", 
                 info.Bucket, info.Key, *info.ContentLength)
             
             // 10MB以上のファイルはスキップ
             if *info.ContentLength > 10*1024*1024 {
-                return false, nil
+                return "", false, nil
             }
             
             // JSONを読み込み
-            data, err := io.ReadAll(tmpFile)
+            data, err := os.ReadFile(srcFilePath)
             if err != nil {
-                return false, err
+                return "", false, err
             }
             
             var jsonData interface{}
             if err := json.Unmarshal(data, &jsonData); err != nil {
-                return false, fmt.Errorf("invalid JSON: %w", err)
+                return "", false, fmt.Errorf("invalid JSON: %w", err)
             }
             
-            // 整形して書き戻し
+            // 整形
             formatted, err := json.MarshalIndent(jsonData, "", "  ")
             if err != nil {
-                return false, err
+                return "", false, err
             }
             
             // メタデータを追加
@@ -195,12 +201,19 @@ func main() {
             info.Metadata["formatted"] = aws.String("true")
             info.Metadata["formatted-at"] = aws.String(time.Now().Format(time.RFC3339))
             
-            // 一時ファイルに書き込み
-            tmpFile.Seek(0, 0)
-            tmpFile.Truncate(0)
-            _, err = tmpFile.Write(formatted)
+            // 新しいファイルに書き込み
+            formattedFile, err := os.CreateTemp("", "formatted-*.json")
+            if err != nil {
+                return "", false, err
+            }
+            defer formattedFile.Close()
             
-            return true, err
+            if _, err := formattedFile.Write(formatted); err != nil {
+                os.Remove(formattedFile.Name())
+                return "", false, err
+            }
+            
+            return formattedFile.Name(), true, nil
         })
     
     if err != nil {

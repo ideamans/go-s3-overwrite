@@ -27,7 +27,12 @@ type ObjectInfo struct {
 }
 
 // OverwriteCallback defines the callback function signature
-type OverwriteCallback func(info ObjectInfo, tmpFile *os.File) (bool, error)
+// The callback receives object info and the path to the source file.
+// It returns:
+// - overwritingFilePath: the path to the file to upload (empty string to skip overwrite)
+// - autoRemove: if true, the file will be automatically removed after upload (only if different from srcFilePath)
+// - err: any error that occurred
+type OverwriteCallback func(info ObjectInfo, srcFilePath string) (overwritingFilePath string, autoRemove bool, err error)
 
 // S3Client is the minimal interface required for overwrite operations
 type S3Client interface {
@@ -92,14 +97,21 @@ func OverwriteS3Object(
 		VersionId:     getResp.VersionId,
 	}
 
-	// Call callback
-	shouldOverwrite, err := callback(info, tmpFile)
+	// Call callback with temp file path
+	overwritingFilePath, autoRemove, err := callback(info, tmpFile.Name())
 	if err != nil {
 		return fmt.Errorf("callback error: %w", err)
 	}
 
-	if !shouldOverwrite {
+	if overwritingFilePath == "" {
 		return nil
+	}
+
+	// Schedule cleanup if requested
+	if autoRemove && overwritingFilePath != "" && overwritingFilePath != tmpFile.Name() {
+		defer func() {
+			_ = os.Remove(overwritingFilePath)
+		}()
 	}
 
 	// Get existing tags
@@ -128,16 +140,18 @@ func OverwriteS3Object(
 		return fmt.Errorf("failed to get object ACL: %w", err)
 	}
 
-	// Seek to beginning for upload
-	if _, err := tmpFile.Seek(0, 0); err != nil {
-		return fmt.Errorf("failed to seek temp file for upload: %w", err)
+	// Open the file to upload
+	uploadFile, err := os.Open(overwritingFilePath)
+	if err != nil {
+		return fmt.Errorf("failed to open overwriting file: %w", err)
 	}
+	defer uploadFile.Close()
 
 	// Build PutObject input
 	putInput := &s3.PutObjectInput{
 		Bucket:                  aws.String(bucket),
 		Key:                     aws.String(key),
-		Body:                    tmpFile,
+		Body:                    uploadFile,
 		ContentType:             getResp.ContentType,
 		CacheControl:            getResp.CacheControl,
 		ContentDisposition:      getResp.ContentDisposition,
@@ -228,14 +242,21 @@ func OverwriteS3ObjectWithAcl(
 		VersionId:     getResp.VersionId,
 	}
 
-	// Call callback
-	shouldOverwrite, err := callback(info, tmpFile)
+	// Call callback with temp file path
+	overwritingFilePath, autoRemove, err := callback(info, tmpFile.Name())
 	if err != nil {
 		return fmt.Errorf("callback error: %w", err)
 	}
 
-	if !shouldOverwrite {
+	if overwritingFilePath == "" {
 		return nil
+	}
+
+	// Schedule cleanup if requested
+	if autoRemove && overwritingFilePath != "" && overwritingFilePath != tmpFile.Name() {
+		defer func() {
+			_ = os.Remove(overwritingFilePath)
+		}()
 	}
 
 	// Get existing tags
@@ -255,16 +276,18 @@ func OverwriteS3ObjectWithAcl(
 		}
 	}
 
-	// Seek to beginning for upload
-	if _, err := tmpFile.Seek(0, 0); err != nil {
-		return fmt.Errorf("failed to seek temp file for upload: %w", err)
+	// Open the file to upload
+	uploadFile, err := os.Open(overwritingFilePath)
+	if err != nil {
+		return fmt.Errorf("failed to open overwriting file: %w", err)
 	}
+	defer uploadFile.Close()
 
 	// Build PutObject input with simple ACL
 	putInput := &s3.PutObjectInput{
 		Bucket:                  aws.String(bucket),
 		Key:                     aws.String(key),
-		Body:                    tmpFile,
+		Body:                    uploadFile,
 		ACL:                     aws.String(acl),
 		ContentType:             getResp.ContentType,
 		CacheControl:            getResp.CacheControl,
