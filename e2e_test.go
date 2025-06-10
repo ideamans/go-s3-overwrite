@@ -94,11 +94,11 @@ func TestE2E_OverwriteS3Object(t *testing.T) {
 	})
 
 	// Test overwrite with ACL preservation
-	err = OverwriteS3Object(client, bucket, key, func(info ObjectInfo, tmpFile *os.File) (bool, error) {
+	err = OverwriteS3Object(client, bucket, key, func(info ObjectInfo, srcFilePath string) (string, bool, error) {
 		// Verify original content
-		content, err := io.ReadAll(tmpFile)
+		content, err := os.ReadFile(srcFilePath)
 		if err != nil {
-			return false, err
+			return "", false, err
 		}
 		if string(content) != "original content" {
 			t.Errorf("Expected 'original content', got '%s'", string(content))
@@ -116,16 +116,23 @@ func TestE2E_OverwriteS3Object(t *testing.T) {
 			t.Errorf("Original metadata not found in callback, got metadata: %v", info.Metadata)
 		}
 
-		// Write modified content
-		tmpFile.Seek(0, 0)
-		tmpFile.Truncate(0)
-		tmpFile.WriteString("modified content via E2E test")
+		// Write modified content to a new file
+		modifiedFile, err := os.CreateTemp("", "e2e-modified-*.tmp")
+		if err != nil {
+			return "", false, err
+		}
+		defer modifiedFile.Close()
+		
+		if _, err := modifiedFile.WriteString("modified content via E2E test"); err != nil {
+			os.Remove(modifiedFile.Name())
+			return "", false, err
+		}
 
 		// Add new metadata
 		info.Metadata["modified"] = aws.String("true")
 		info.Metadata["modified-at"] = aws.String(time.Now().Format(time.RFC3339))
 
-		return true, nil
+		return modifiedFile.Name(), true, nil
 	})
 
 	if err != nil {
@@ -260,16 +267,16 @@ func TestE2E_OverwriteS3ObjectWithAcl(t *testing.T) {
 	})
 
 	// Test overwrite preserving private ACL
-	err = OverwriteS3ObjectWithAcl(client, bucket, key, "private", func(info ObjectInfo, tmpFile *os.File) (bool, error) {
+	err = OverwriteS3ObjectWithAcl(client, bucket, key, "private", func(info ObjectInfo, srcFilePath string) (string, bool, error) {
 		// Read and parse JSON
-		data, err := io.ReadAll(tmpFile)
+		data, err := os.ReadFile(srcFilePath)
 		if err != nil {
-			return false, err
+			return "", false, err
 		}
 
 		var jsonObj map[string]interface{}
 		if err := json.Unmarshal(data, &jsonObj); err != nil {
-			return false, fmt.Errorf("failed to parse JSON: %w", err)
+			return "", false, fmt.Errorf("failed to parse JSON: %w", err)
 		}
 
 		// Update JSON
@@ -280,18 +287,25 @@ func TestE2E_OverwriteS3ObjectWithAcl(t *testing.T) {
 		// Format with indentation
 		formatted, err := json.MarshalIndent(jsonObj, "", "  ")
 		if err != nil {
-			return false, err
+			return "", false, err
 		}
 
-		// Write back
-		tmpFile.Seek(0, 0)
-		tmpFile.Truncate(0)
-		_, err = tmpFile.Write(formatted)
+		// Write to new file
+		formattedFile, err := os.CreateTemp("", "e2e-json-*.json")
+		if err != nil {
+			return "", false, err
+		}
+		defer formattedFile.Close()
+		
+		if _, err := formattedFile.Write(formatted); err != nil {
+			os.Remove(formattedFile.Name())
+			return "", false, err
+		}
 
 		// Update metadata
 		info.Metadata["formatted"] = aws.String("true")
 
-		return true, err
+		return formattedFile.Name(), true, nil
 	})
 
 	if err != nil {
@@ -388,16 +402,16 @@ func TestE2E_SkipLargeFiles(t *testing.T) {
 	})
 
 	callbackCalled := false
-	err = OverwriteS3Object(client, bucket, key, func(info ObjectInfo, tmpFile *os.File) (bool, error) {
+	err = OverwriteS3Object(client, bucket, key, func(info ObjectInfo, srcFilePath string) (string, bool, error) {
 		callbackCalled = true
 
 		// Simulate size check - skip if content length > 10 bytes
 		if *info.ContentLength > 10 {
-			return false, nil // Skip
+			return "", false, nil // Skip
 		}
 
 		t.Error("Should have skipped this file")
-		return true, nil
+		return srcFilePath, false, nil
 	})
 
 	if err != nil {
@@ -429,9 +443,9 @@ func TestE2E_ErrorHandling(t *testing.T) {
 	bucket := os.Getenv("TEST_BUCKET")
 
 	// Test with non-existent object
-	err := OverwriteS3Object(client, bucket, "non-existent-key", func(info ObjectInfo, tmpFile *os.File) (bool, error) {
+	err := OverwriteS3Object(client, bucket, "non-existent-key", func(info ObjectInfo, srcFilePath string) (string, bool, error) {
 		t.Error("Callback should not be called for non-existent object")
-		return true, nil
+		return srcFilePath, false, nil
 	})
 
 	if err == nil {
@@ -454,8 +468,8 @@ func TestE2E_ErrorHandling(t *testing.T) {
 		Key:    aws.String(key),
 	})
 
-	err = OverwriteS3Object(client, bucket, key, func(info ObjectInfo, tmpFile *os.File) (bool, error) {
-		return false, fmt.Errorf("simulated callback error")
+	err = OverwriteS3Object(client, bucket, key, func(info ObjectInfo, srcFilePath string) (string, bool, error) {
+		return "", false, fmt.Errorf("simulated callback error")
 	})
 
 	if err == nil {
@@ -489,9 +503,9 @@ func TestE2E_TempFileCleanup(t *testing.T) {
 	var tempFiles []string
 
 	// Test successful case
-	err = OverwriteS3Object(client, bucket, key, func(info ObjectInfo, tmpFile *os.File) (bool, error) {
-		tempFiles = append(tempFiles, tmpFile.Name())
-		return true, nil
+	err = OverwriteS3Object(client, bucket, key, func(info ObjectInfo, srcFilePath string) (string, bool, error) {
+		tempFiles = append(tempFiles, srcFilePath)
+		return srcFilePath, false, nil
 	})
 
 	if err != nil {
@@ -507,9 +521,9 @@ func TestE2E_TempFileCleanup(t *testing.T) {
 
 	// Test error case
 	tempFiles = nil
-	err = OverwriteS3Object(client, bucket, key, func(info ObjectInfo, tmpFile *os.File) (bool, error) {
-		tempFiles = append(tempFiles, tmpFile.Name())
-		return false, fmt.Errorf("force cleanup test")
+	err = OverwriteS3Object(client, bucket, key, func(info ObjectInfo, srcFilePath string) (string, bool, error) {
+		tempFiles = append(tempFiles, srcFilePath)
+		return "", false, fmt.Errorf("force cleanup test")
 	})
 
 	if err == nil {
@@ -561,12 +575,20 @@ func TestE2E_ComplexACLPreservation(t *testing.T) {
 	})
 
 	// Test overwrite with ACL preservation
-	err = OverwriteS3Object(client, bucket, key, func(info ObjectInfo, tmpFile *os.File) (bool, error) {
-		// Modify content
-		tmpFile.Seek(0, 0)
-		tmpFile.Truncate(0)
-		tmpFile.WriteString("modified content with complex ACL")
-		return true, nil
+	err = OverwriteS3Object(client, bucket, key, func(info ObjectInfo, srcFilePath string) (string, bool, error) {
+		// Modify content to new file
+		modifiedFile, err := os.CreateTemp("", "e2e-complex-acl-*.txt")
+		if err != nil {
+			return "", false, err
+		}
+		defer modifiedFile.Close()
+		
+		if _, err := modifiedFile.WriteString("modified content with complex ACL"); err != nil {
+			os.Remove(modifiedFile.Name())
+			return "", false, err
+		}
+		
+		return modifiedFile.Name(), true, nil
 	})
 
 	if err != nil {
@@ -644,12 +666,20 @@ func TestE2E_PublicPrivateACLSwitch(t *testing.T) {
 	})
 
 	// Switch to private
-	err = OverwriteS3ObjectWithAcl(client, bucket, key, "private", func(info ObjectInfo, tmpFile *os.File) (bool, error) {
+	err = OverwriteS3ObjectWithAcl(client, bucket, key, "private", func(info ObjectInfo, srcFilePath string) (string, bool, error) {
 		// Update content
-		tmpFile.Seek(0, 0)
-		tmpFile.Truncate(0)
-		tmpFile.WriteString("now private content")
-		return true, nil
+		modifiedFile, err := os.CreateTemp("", "e2e-private-*.txt")
+		if err != nil {
+			return "", false, err
+		}
+		defer modifiedFile.Close()
+		
+		if _, err := modifiedFile.WriteString("now private content"); err != nil {
+			os.Remove(modifiedFile.Name())
+			return "", false, err
+		}
+		
+		return modifiedFile.Name(), true, nil
 	})
 
 	if err != nil {
@@ -691,11 +721,20 @@ func TestE2E_PublicPrivateACLSwitch(t *testing.T) {
 	}
 
 	// Switch back to public-read
-	err = OverwriteS3ObjectWithAcl(client, bucket, key, "public-read", func(info ObjectInfo, tmpFile *os.File) (bool, error) {
-		tmpFile.Seek(0, 0)
-		tmpFile.Truncate(0)
-		tmpFile.WriteString("public again")
-		return true, nil
+	err = OverwriteS3ObjectWithAcl(client, bucket, key, "public-read", func(info ObjectInfo, srcFilePath string) (string, bool, error) {
+		// Change content again
+		modifiedFile, err := os.CreateTemp("", "e2e-public-*.txt")
+		if err != nil {
+			return "", false, err
+		}
+		defer modifiedFile.Close()
+		
+		if _, err := modifiedFile.WriteString("public again"); err != nil {
+			os.Remove(modifiedFile.Name())
+			return "", false, err
+		}
+		
+		return modifiedFile.Name(), true, nil
 	})
 
 	if err != nil {
@@ -751,17 +790,24 @@ func TestE2E_MetadataAndTagsWithSpecialCharacters(t *testing.T) {
 	})
 
 	// Overwrite while preserving special characters
-	err = OverwriteS3Object(client, bucket, key, func(info ObjectInfo, tmpFile *os.File) (bool, error) {
+	err = OverwriteS3Object(client, bucket, key, func(info ObjectInfo, srcFilePath string) (string, bool, error) {
 		// Add more metadata
 		info.Metadata["path"] = aws.String("/path/to/file")
 		info.Metadata["status"] = aws.String("processed")
 
 		// Update content
-		tmpFile.Seek(0, 0)
-		tmpFile.Truncate(0)
-		tmpFile.WriteString("updated content with special metadata")
-
-		return true, nil
+		modifiedFile, err := os.CreateTemp("", "e2e-metadata-*.txt")
+		if err != nil {
+			return "", false, err
+		}
+		defer modifiedFile.Close()
+		
+		if _, err := modifiedFile.WriteString("updated content with special metadata"); err != nil {
+			os.Remove(modifiedFile.Name())
+			return "", false, err
+		}
+		
+		return modifiedFile.Name(), true, nil
 	})
 
 	if err != nil {
@@ -852,12 +898,12 @@ func TestE2E_LargeMetadataAndManyTags(t *testing.T) {
 	})
 
 	// Overwrite and add more metadata
-	err = OverwriteS3Object(client, bucket, key, func(info ObjectInfo, tmpFile *os.File) (bool, error) {
+	err = OverwriteS3Object(client, bucket, key, func(info ObjectInfo, srcFilePath string) (string, bool, error) {
 		// Add additional metadata
 		info.Metadata["processed"] = aws.String("true")
 		info.Metadata["timestamp"] = aws.String(time.Now().Format(time.RFC3339))
 
-		return true, nil
+		return srcFilePath, false, nil
 	})
 
 	if err != nil {
@@ -952,16 +998,23 @@ func TestE2E_SpecificUserAndEmailGrantees(t *testing.T) {
 	})
 
 	// Test overwrite with ACL preservation
-	err = OverwriteS3Object(client, bucket, key, func(info ObjectInfo, tmpFile *os.File) (bool, error) {
+	err = OverwriteS3Object(client, bucket, key, func(info ObjectInfo, srcFilePath string) (string, bool, error) {
 		// Modify content
-		tmpFile.Seek(0, 0)
-		tmpFile.Truncate(0)
-		tmpFile.WriteString("modified content with user grants")
+		modifiedFile, err := os.CreateTemp("", "e2e-grants-*.txt")
+		if err != nil {
+			return "", false, err
+		}
+		defer modifiedFile.Close()
+		
+		if _, err := modifiedFile.WriteString("modified content with user grants"); err != nil {
+			os.Remove(modifiedFile.Name())
+			return "", false, err
+		}
 
 		// Add metadata
 		info.Metadata["modified"] = aws.String("true")
 
-		return true, nil
+		return modifiedFile.Name(), true, nil
 	})
 
 	if err != nil {
