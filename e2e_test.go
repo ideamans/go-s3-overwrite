@@ -4,6 +4,7 @@
 package overwrite
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,46 +13,46 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/credentials"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
-func getTestS3Client(t *testing.T) *s3.S3 {
+func getTestS3Client(t *testing.T) *s3.Client {
 	// Check for required environment variables
 	bucket := os.Getenv("TEST_BUCKET")
 	if bucket == "" {
 		t.Skip("TEST_BUCKET not set, skipping E2E tests")
 	}
 
-	// Create AWS session
-	config := &aws.Config{}
+	// Create AWS configuration
+	var opts []func(*config.LoadOptions) error
 
 	// Set region if provided, default to ap-northeast-1
 	region := os.Getenv("AWS_REGION")
 	if region == "" {
 		region = "ap-northeast-1"
 	}
-	config.Region = aws.String(region)
+	opts = append(opts, config.WithRegion(region))
 
 	// Use explicit credentials if provided
 	accessKey := os.Getenv("AWS_ACCESS_KEY_ID")
 	secretKey := os.Getenv("AWS_SECRET_ACCESS_KEY")
 	if accessKey != "" && secretKey != "" {
-		config.Credentials = credentials.NewStaticCredentials(accessKey, secretKey, "")
+		opts = append(opts, config.WithCredentialsProvider(
+			credentials.NewStaticCredentialsProvider(accessKey, secretKey, ""),
+		))
 	}
 
-	// Create session with profile support
-	sess, err := session.NewSessionWithOptions(session.Options{
-		Config:  *config,
-		Profile: os.Getenv("AWS_PROFILE"),
-	})
+	// Load configuration
+	cfg, err := config.LoadDefaultConfig(context.TODO(), opts...)
 	if err != nil {
-		t.Fatalf("Failed to create AWS session: %v", err)
+		t.Fatalf("Failed to create AWS config: %v", err)
 	}
 
-	return s3.New(sess)
+	return s3.NewFromConfig(cfg)
 }
 
 func TestE2E_OverwriteS3Object(t *testing.T) {
@@ -60,16 +61,16 @@ func TestE2E_OverwriteS3Object(t *testing.T) {
 	key := fmt.Sprintf("go-s3-overwrite-test/%d/test.txt", time.Now().Unix())
 
 	// Initial upload with tags and metadata
-	_, err := client.PutObject(&s3.PutObjectInput{
+	_, err := client.PutObject(context.Background(), &s3.PutObjectInput{
 		Bucket:       aws.String(bucket),
 		Key:          aws.String(key),
 		Body:         strings.NewReader("original content"),
 		ContentType:  aws.String("text/plain"),
 		CacheControl: aws.String("max-age=3600"),
 		Tagging:      aws.String("env=test&purpose=e2e-test"),
-		Metadata: map[string]*string{
-			"original": aws.String("true"),
-			"created":  aws.String(time.Now().Format(time.RFC3339)),
+		Metadata: map[string]string{
+			"original": "true",
+			"created":  time.Now().Format(time.RFC3339),
 		},
 	})
 	if err != nil {
@@ -77,7 +78,7 @@ func TestE2E_OverwriteS3Object(t *testing.T) {
 	}
 
 	// Set ACL with multiple grants
-	_, err = client.PutObjectAcl(&s3.PutObjectAclInput{
+	_, err = client.PutObjectAcl(context.Background(), &s3.PutObjectAclInput{
 		Bucket:       aws.String(bucket),
 		Key:          aws.String(key),
 		GrantRead:    aws.String("uri=\"http://acs.amazonaws.com/groups/global/AllUsers\""),
@@ -88,13 +89,13 @@ func TestE2E_OverwriteS3Object(t *testing.T) {
 	}
 
 	// Cleanup
-	defer client.DeleteObject(&s3.DeleteObjectInput{
+	defer client.DeleteObject(context.Background(), &s3.DeleteObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(key),
 	})
 
 	// Test overwrite with ACL preservation
-	err = OverwriteS3Object(client, bucket, key, func(info ObjectInfo, srcFilePath string) (string, bool, error) {
+	err = OverwriteS3Object(context.Background(), client, bucket, key, func(info ObjectInfo, srcFilePath string) (string, bool, error) {
 		// Verify original content
 		content, err := os.ReadFile(srcFilePath)
 		if err != nil {
@@ -140,7 +141,7 @@ func TestE2E_OverwriteS3Object(t *testing.T) {
 	}
 
 	// Verify the object was updated correctly
-	getResp, err := client.GetObject(&s3.GetObjectInput{
+	getResp, err := client.GetObject(context.Background(), &s3.GetObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(key),
 	})
@@ -167,15 +168,15 @@ func TestE2E_OverwriteS3Object(t *testing.T) {
 	}
 
 	// Check metadata (S3 returns metadata keys with capital first letter)
-	if val, ok := getResp.Metadata["Original"]; !ok || *val != "true" {
+	if val, ok := getResp.Metadata["Original"]; !ok || val != "true" {
 		t.Errorf("Original metadata not preserved, got metadata: %v", getResp.Metadata)
 	}
-	if val, ok := getResp.Metadata["Modified"]; !ok || *val != "true" {
+	if val, ok := getResp.Metadata["Modified"]; !ok || val != "true" {
 		t.Errorf("Modified metadata not added, got metadata: %v", getResp.Metadata)
 	}
 
 	// Check tags
-	tagResp, err := client.GetObjectTagging(&s3.GetObjectTaggingInput{
+	tagResp, err := client.GetObjectTagging(context.Background(), &s3.GetObjectTaggingInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(key),
 	})
@@ -200,7 +201,7 @@ func TestE2E_OverwriteS3Object(t *testing.T) {
 	}
 
 	// Check ACL
-	aclResp, err := client.GetObjectAcl(&s3.GetObjectAclInput{
+	aclResp, err := client.GetObjectAcl(context.Background(), &s3.GetObjectAclInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(key),
 	})
@@ -213,10 +214,10 @@ func TestE2E_OverwriteS3Object(t *testing.T) {
 	hasAuthenticatedReadACP := false
 	for _, grant := range aclResp.Grants {
 		if grant.Grantee.URI != nil {
-			if *grant.Grantee.URI == "http://acs.amazonaws.com/groups/global/AllUsers" && *grant.Permission == "READ" {
+			if *grant.Grantee.URI == "http://acs.amazonaws.com/groups/global/AllUsers" && string(grant.Permission) == "READ" {
 				hasPublicRead = true
 			}
-			if *grant.Grantee.URI == "http://acs.amazonaws.com/groups/global/AuthenticatedUsers" && *grant.Permission == "READ_ACP" {
+			if *grant.Grantee.URI == "http://acs.amazonaws.com/groups/global/AuthenticatedUsers" && string(grant.Permission) == "READ_ACP" {
 				hasAuthenticatedReadACP = true
 			}
 		}
@@ -244,16 +245,16 @@ func TestE2E_OverwriteS3ObjectWithAcl(t *testing.T) {
 	}
 	jsonData, _ := json.Marshal(initialData)
 
-	_, err := client.PutObject(&s3.PutObjectInput{
+	_, err := client.PutObject(context.Background(), &s3.PutObjectInput{
 		Bucket:       aws.String(bucket),
 		Key:          aws.String(key),
 		Body:         strings.NewReader(string(jsonData)),
 		ContentType:  aws.String("application/json"),
-		ACL:          aws.String("public-read"),
+		ACL:          types.ObjectCannedACLPublicRead,
 		Tagging:      aws.String("type=json&format=unformatted"),
 		CacheControl: aws.String("no-cache"),
-		Metadata: map[string]*string{
-			"app": aws.String("go-s3-overwrite"),
+		Metadata: map[string]string{
+			"app": "go-s3-overwrite",
 		},
 	})
 	if err != nil {
@@ -261,13 +262,13 @@ func TestE2E_OverwriteS3ObjectWithAcl(t *testing.T) {
 	}
 
 	// Cleanup
-	defer client.DeleteObject(&s3.DeleteObjectInput{
+	defer client.DeleteObject(context.Background(), &s3.DeleteObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(key),
 	})
 
 	// Test overwrite preserving private ACL
-	err = OverwriteS3ObjectWithAcl(client, bucket, key, "private", func(info ObjectInfo, srcFilePath string) (string, bool, error) {
+	err = OverwriteS3ObjectWithAcl(context.Background(), client, bucket, key, "private", func(info ObjectInfo, srcFilePath string) (string, bool, error) {
 		// Read and parse JSON
 		data, err := os.ReadFile(srcFilePath)
 		if err != nil {
@@ -313,7 +314,7 @@ func TestE2E_OverwriteS3ObjectWithAcl(t *testing.T) {
 	}
 
 	// Verify the result
-	getResp, err := client.GetObject(&s3.GetObjectInput{
+	getResp, err := client.GetObject(context.Background(), &s3.GetObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(key),
 	})
@@ -349,7 +350,7 @@ func TestE2E_OverwriteS3ObjectWithAcl(t *testing.T) {
 	}
 
 	// Check ACL changed to private
-	aclResp, err := client.GetObjectAcl(&s3.GetObjectAclInput{
+	aclResp, err := client.GetObjectAcl(context.Background(), &s3.GetObjectAclInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(key),
 	})
@@ -365,7 +366,7 @@ func TestE2E_OverwriteS3ObjectWithAcl(t *testing.T) {
 	}
 
 	// Check tags preserved
-	tagResp, err := client.GetObjectTagging(&s3.GetObjectTaggingInput{
+	tagResp, err := client.GetObjectTagging(context.Background(), &s3.GetObjectTaggingInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(key),
 	})
@@ -385,7 +386,7 @@ func TestE2E_SkipLargeFiles(t *testing.T) {
 
 	// Upload test object
 	content := "This file should be skipped"
-	_, err := client.PutObject(&s3.PutObjectInput{
+	_, err := client.PutObject(context.Background(), &s3.PutObjectInput{
 		Bucket:  aws.String(bucket),
 		Key:     aws.String(key),
 		Body:    strings.NewReader(content),
@@ -396,13 +397,13 @@ func TestE2E_SkipLargeFiles(t *testing.T) {
 	}
 
 	// Cleanup
-	defer client.DeleteObject(&s3.DeleteObjectInput{
+	defer client.DeleteObject(context.Background(), &s3.DeleteObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(key),
 	})
 
 	callbackCalled := false
-	err = OverwriteS3Object(client, bucket, key, func(info ObjectInfo, srcFilePath string) (string, bool, error) {
+	err = OverwriteS3Object(context.Background(), client, bucket, key, func(info ObjectInfo, srcFilePath string) (string, bool, error) {
 		callbackCalled = true
 
 		// Simulate size check - skip if content length > 10 bytes
@@ -423,7 +424,7 @@ func TestE2E_SkipLargeFiles(t *testing.T) {
 	}
 
 	// Verify content unchanged
-	getResp, err := client.GetObject(&s3.GetObjectInput{
+	getResp, err := client.GetObject(context.Background(), &s3.GetObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(key),
 	})
@@ -443,7 +444,7 @@ func TestE2E_ErrorHandling(t *testing.T) {
 	bucket := os.Getenv("TEST_BUCKET")
 
 	// Test with non-existent object
-	err := OverwriteS3Object(client, bucket, "non-existent-key", func(info ObjectInfo, srcFilePath string) (string, bool, error) {
+	err := OverwriteS3Object(context.Background(), client, bucket, "non-existent-key", func(info ObjectInfo, srcFilePath string) (string, bool, error) {
 		t.Error("Callback should not be called for non-existent object")
 		return srcFilePath, false, nil
 	})
@@ -454,7 +455,7 @@ func TestE2E_ErrorHandling(t *testing.T) {
 
 	// Test callback error
 	key := fmt.Sprintf("go-s3-overwrite-test/%d/error-test.txt", time.Now().Unix())
-	_, err = client.PutObject(&s3.PutObjectInput{
+	_, err = client.PutObject(context.Background(), &s3.PutObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(key),
 		Body:   strings.NewReader("test"),
@@ -463,12 +464,12 @@ func TestE2E_ErrorHandling(t *testing.T) {
 		t.Fatalf("Failed to upload test object: %v", err)
 	}
 
-	defer client.DeleteObject(&s3.DeleteObjectInput{
+	defer client.DeleteObject(context.Background(), &s3.DeleteObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(key),
 	})
 
-	err = OverwriteS3Object(client, bucket, key, func(info ObjectInfo, srcFilePath string) (string, bool, error) {
+	err = OverwriteS3Object(context.Background(), client, bucket, key, func(info ObjectInfo, srcFilePath string) (string, bool, error) {
 		return "", false, fmt.Errorf("simulated callback error")
 	})
 
@@ -486,7 +487,7 @@ func TestE2E_TempFileCleanup(t *testing.T) {
 	key := fmt.Sprintf("go-s3-overwrite-test/%d/cleanup-test.txt", time.Now().Unix())
 
 	// Upload test object
-	_, err := client.PutObject(&s3.PutObjectInput{
+	_, err := client.PutObject(context.Background(), &s3.PutObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(key),
 		Body:   strings.NewReader("test content for cleanup"),
@@ -495,7 +496,7 @@ func TestE2E_TempFileCleanup(t *testing.T) {
 		t.Fatalf("Failed to upload test object: %v", err)
 	}
 
-	defer client.DeleteObject(&s3.DeleteObjectInput{
+	defer client.DeleteObject(context.Background(), &s3.DeleteObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(key),
 	})
@@ -503,7 +504,7 @@ func TestE2E_TempFileCleanup(t *testing.T) {
 	var tempFiles []string
 
 	// Test successful case
-	err = OverwriteS3Object(client, bucket, key, func(info ObjectInfo, srcFilePath string) (string, bool, error) {
+	err = OverwriteS3Object(context.Background(), client, bucket, key, func(info ObjectInfo, srcFilePath string) (string, bool, error) {
 		tempFiles = append(tempFiles, srcFilePath)
 		return srcFilePath, false, nil
 	})
@@ -521,7 +522,7 @@ func TestE2E_TempFileCleanup(t *testing.T) {
 
 	// Test error case
 	tempFiles = nil
-	err = OverwriteS3Object(client, bucket, key, func(info ObjectInfo, srcFilePath string) (string, bool, error) {
+	err = OverwriteS3Object(context.Background(), client, bucket, key, func(info ObjectInfo, srcFilePath string) (string, bool, error) {
 		tempFiles = append(tempFiles, srcFilePath)
 		return "", false, fmt.Errorf("force cleanup test")
 	})
@@ -544,7 +545,7 @@ func TestE2E_ComplexACLPreservation(t *testing.T) {
 	key := fmt.Sprintf("go-s3-overwrite-test/%d/complex-acl.txt", time.Now().Unix())
 
 	// Upload object
-	_, err := client.PutObject(&s3.PutObjectInput{
+	_, err := client.PutObject(context.Background(), &s3.PutObjectInput{
 		Bucket:      aws.String(bucket),
 		Key:         aws.String(key),
 		Body:        strings.NewReader("test content"),
@@ -555,7 +556,7 @@ func TestE2E_ComplexACLPreservation(t *testing.T) {
 	}
 
 	// Set complex ACL with multiple grants
-	_, err = client.PutObjectAcl(&s3.PutObjectAclInput{
+	_, err = client.PutObjectAcl(context.Background(), &s3.PutObjectAclInput{
 		Bucket:           aws.String(bucket),
 		Key:              aws.String(key),
 		GrantRead:        aws.String("uri=\"http://acs.amazonaws.com/groups/global/AllUsers\""),
@@ -569,13 +570,13 @@ func TestE2E_ComplexACLPreservation(t *testing.T) {
 	}
 
 	// Cleanup
-	defer client.DeleteObject(&s3.DeleteObjectInput{
+	defer client.DeleteObject(context.Background(), &s3.DeleteObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(key),
 	})
 
 	// Test overwrite with ACL preservation
-	err = OverwriteS3Object(client, bucket, key, func(info ObjectInfo, srcFilePath string) (string, bool, error) {
+	err = OverwriteS3Object(context.Background(), client, bucket, key, func(info ObjectInfo, srcFilePath string) (string, bool, error) {
 		// Modify content to new file
 		modifiedFile, err := os.CreateTemp("", "e2e-complex-acl-*.txt")
 		if err != nil {
@@ -596,7 +597,7 @@ func TestE2E_ComplexACLPreservation(t *testing.T) {
 	}
 
 	// Verify ACL is fully preserved
-	aclResp, err := client.GetObjectAcl(&s3.GetObjectAclInput{
+	aclResp, err := client.GetObjectAcl(context.Background(), &s3.GetObjectAclInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(key),
 	})
@@ -620,9 +621,9 @@ func TestE2E_ComplexACLPreservation(t *testing.T) {
 	}
 
 	for _, grant := range aclResp.Grants {
-		if grant.Grantee.URI != nil && grant.Permission != nil {
+		if grant.Grantee.URI != nil {
 			uri := *grant.Grantee.URI
-			perm := *grant.Permission
+			perm := string(grant.Permission)
 			if perms, ok := expectedPermissions[uri]; ok {
 				if _, ok := perms[perm]; ok {
 					perms[perm] = true
@@ -647,12 +648,12 @@ func TestE2E_PublicPrivateACLSwitch(t *testing.T) {
 	key := fmt.Sprintf("go-s3-overwrite-test/%d/acl-switch.txt", time.Now().Unix())
 
 	// Start with public-read
-	_, err := client.PutObject(&s3.PutObjectInput{
+	_, err := client.PutObject(context.Background(), &s3.PutObjectInput{
 		Bucket:      aws.String(bucket),
 		Key:         aws.String(key),
 		Body:        strings.NewReader("public content"),
 		ContentType: aws.String("text/plain"),
-		ACL:         aws.String("public-read"),
+		ACL:         types.ObjectCannedACLPublicRead,
 		Tagging:     aws.String("visibility=public"),
 	})
 	if err != nil {
@@ -660,13 +661,13 @@ func TestE2E_PublicPrivateACLSwitch(t *testing.T) {
 	}
 
 	// Cleanup
-	defer client.DeleteObject(&s3.DeleteObjectInput{
+	defer client.DeleteObject(context.Background(), &s3.DeleteObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(key),
 	})
 
 	// Switch to private
-	err = OverwriteS3ObjectWithAcl(client, bucket, key, "private", func(info ObjectInfo, srcFilePath string) (string, bool, error) {
+	err = OverwriteS3ObjectWithAcl(context.Background(), client, bucket, key, "private", func(info ObjectInfo, srcFilePath string) (string, bool, error) {
 		// Update content
 		modifiedFile, err := os.CreateTemp("", "e2e-private-*.txt")
 		if err != nil {
@@ -687,7 +688,7 @@ func TestE2E_PublicPrivateACLSwitch(t *testing.T) {
 	}
 
 	// Verify it's private
-	aclResp, err := client.GetObjectAcl(&s3.GetObjectAclInput{
+	aclResp, err := client.GetObjectAcl(context.Background(), &s3.GetObjectAclInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(key),
 	})
@@ -702,7 +703,7 @@ func TestE2E_PublicPrivateACLSwitch(t *testing.T) {
 	}
 
 	// Verify tags were preserved
-	tagResp, err := client.GetObjectTagging(&s3.GetObjectTaggingInput{
+	tagResp, err := client.GetObjectTagging(context.Background(), &s3.GetObjectTaggingInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(key),
 	})
@@ -721,7 +722,7 @@ func TestE2E_PublicPrivateACLSwitch(t *testing.T) {
 	}
 
 	// Switch back to public-read
-	err = OverwriteS3ObjectWithAcl(client, bucket, key, "public-read", func(info ObjectInfo, srcFilePath string) (string, bool, error) {
+	err = OverwriteS3ObjectWithAcl(context.Background(), client, bucket, key, "public-read", func(info ObjectInfo, srcFilePath string) (string, bool, error) {
 		// Change content again
 		modifiedFile, err := os.CreateTemp("", "e2e-public-*.txt")
 		if err != nil {
@@ -742,7 +743,7 @@ func TestE2E_PublicPrivateACLSwitch(t *testing.T) {
 	}
 
 	// Verify it's public again
-	aclResp, err = client.GetObjectAcl(&s3.GetObjectAclInput{
+	aclResp, err = client.GetObjectAcl(context.Background(), &s3.GetObjectAclInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(key),
 	})
@@ -752,7 +753,7 @@ func TestE2E_PublicPrivateACLSwitch(t *testing.T) {
 
 	hasPublicRead := false
 	for _, grant := range aclResp.Grants {
-		if grant.Grantee.URI != nil && *grant.Grantee.URI == "http://acs.amazonaws.com/groups/global/AllUsers" && *grant.Permission == "READ" {
+		if grant.Grantee.URI != nil && *grant.Grantee.URI == "http://acs.amazonaws.com/groups/global/AllUsers" && string(grant.Permission) == "READ" {
 			hasPublicRead = true
 		}
 	}
@@ -767,16 +768,16 @@ func TestE2E_MetadataAndTagsWithSpecialCharacters(t *testing.T) {
 	key := fmt.Sprintf("go-s3-overwrite-test/%d/special-chars.txt", time.Now().Unix())
 
 	// Upload with special characters in metadata and tags
-	_, err := client.PutObject(&s3.PutObjectInput{
+	_, err := client.PutObject(context.Background(), &s3.PutObjectInput{
 		Bucket:      aws.String(bucket),
 		Key:         aws.String(key),
 		Body:        strings.NewReader("test content"),
 		ContentType: aws.String("text/plain; charset=utf-8"),
 		Tagging:     aws.String("env=test&purpose=e2e-test&special=%E3%83%86%E3%82%B9%E3%83%88"), // Japanese "テスト"
-		Metadata: map[string]*string{
-			"user-name":     aws.String("John Doe"),
-			"special-chars": aws.String("!@#$%^&*()_+-="),
-			"unicode":       aws.String("こんにちは"), // Japanese "Hello"
+		Metadata: map[string]string{
+			"user-name":     "John Doe",
+			"special-chars": "!@#$%^&*()_+-=",
+			"unicode":       "こんにちは", // Japanese "Hello"
 		},
 	})
 	if err != nil {
@@ -784,13 +785,13 @@ func TestE2E_MetadataAndTagsWithSpecialCharacters(t *testing.T) {
 	}
 
 	// Cleanup
-	defer client.DeleteObject(&s3.DeleteObjectInput{
+	defer client.DeleteObject(context.Background(), &s3.DeleteObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(key),
 	})
 
 	// Overwrite while preserving special characters
-	err = OverwriteS3Object(client, bucket, key, func(info ObjectInfo, srcFilePath string) (string, bool, error) {
+	err = OverwriteS3Object(context.Background(), client, bucket, key, func(info ObjectInfo, srcFilePath string) (string, bool, error) {
 		// Add more metadata
 		info.Metadata["path"] = aws.String("/path/to/file")
 		info.Metadata["status"] = aws.String("processed")
@@ -815,7 +816,7 @@ func TestE2E_MetadataAndTagsWithSpecialCharacters(t *testing.T) {
 	}
 
 	// Verify metadata
-	getResp, err := client.GetObject(&s3.GetObjectInput{
+	getResp, err := client.GetObject(context.Background(), &s3.GetObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(key),
 	})
@@ -835,13 +836,13 @@ func TestE2E_MetadataAndTagsWithSpecialCharacters(t *testing.T) {
 	for key, expected := range expectedMetadata {
 		if val, ok := getResp.Metadata[key]; !ok {
 			t.Errorf("Metadata %s not found", key)
-		} else if *val != expected {
-			t.Errorf("Metadata %s: expected '%s', got '%s'", key, expected, *val)
+		} else if val != expected {
+			t.Errorf("Metadata %s: expected '%s', got '%s'", key, expected, val)
 		}
 	}
 
 	// Verify tags with special characters
-	tagResp, err := client.GetObjectTagging(&s3.GetObjectTaggingInput{
+	tagResp, err := client.GetObjectTagging(context.Background(), &s3.GetObjectTaggingInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(key),
 	})
@@ -874,13 +875,13 @@ func TestE2E_LargeMetadataAndManyTags(t *testing.T) {
 
 	// Create metadata with long values
 	longValue := strings.Repeat("a", 1000) // S3 metadata value limit is 2KB
-	metadata := map[string]*string{}
+	metadata := map[string]string{}
 	for i := 0; i < 5; i++ {
-		metadata[fmt.Sprintf("key%d", i)] = aws.String(fmt.Sprintf("value-%d-%s", i, longValue[:100]))
+		metadata[fmt.Sprintf("key%d", i)] = fmt.Sprintf("value-%d-%s", i, longValue[:100])
 	}
 
 	// Upload with many attributes
-	_, err := client.PutObject(&s3.PutObjectInput{
+	_, err := client.PutObject(context.Background(), &s3.PutObjectInput{
 		Bucket:   aws.String(bucket),
 		Key:      aws.String(key),
 		Body:     strings.NewReader("test content"),
@@ -892,13 +893,13 @@ func TestE2E_LargeMetadataAndManyTags(t *testing.T) {
 	}
 
 	// Cleanup
-	defer client.DeleteObject(&s3.DeleteObjectInput{
+	defer client.DeleteObject(context.Background(), &s3.DeleteObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(key),
 	})
 
 	// Overwrite and add more metadata
-	err = OverwriteS3Object(client, bucket, key, func(info ObjectInfo, srcFilePath string) (string, bool, error) {
+	err = OverwriteS3Object(context.Background(), client, bucket, key, func(info ObjectInfo, srcFilePath string) (string, bool, error) {
 		// Add additional metadata
 		info.Metadata["processed"] = aws.String("true")
 		info.Metadata["timestamp"] = aws.String(time.Now().Format(time.RFC3339))
@@ -911,7 +912,7 @@ func TestE2E_LargeMetadataAndManyTags(t *testing.T) {
 	}
 
 	// Verify all tags preserved
-	tagResp, err := client.GetObjectTagging(&s3.GetObjectTaggingInput{
+	tagResp, err := client.GetObjectTagging(context.Background(), &s3.GetObjectTaggingInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(key),
 	})
@@ -924,7 +925,7 @@ func TestE2E_LargeMetadataAndManyTags(t *testing.T) {
 	}
 
 	// Verify metadata
-	getResp, err := client.GetObject(&s3.GetObjectInput{
+	getResp, err := client.GetObject(context.Background(), &s3.GetObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(key),
 	})
@@ -945,7 +946,7 @@ func TestE2E_SpecificUserAndEmailGrantees(t *testing.T) {
 	key := fmt.Sprintf("go-s3-overwrite-test/%d/user-email-acl.txt", time.Now().Unix())
 
 	// Get current user's canonical ID
-	callerResp, err := client.GetBucketAcl(&s3.GetBucketAclInput{
+	callerResp, err := client.GetBucketAcl(context.Background(), &s3.GetBucketAclInput{
 		Bucket: aws.String(bucket),
 	})
 	if err != nil {
@@ -954,7 +955,7 @@ func TestE2E_SpecificUserAndEmailGrantees(t *testing.T) {
 
 	var ownerID string
 	for _, grant := range callerResp.Grants {
-		if grant.Permission != nil && *grant.Permission == "FULL_CONTROL" && grant.Grantee.ID != nil {
+		if string(grant.Permission) == "FULL_CONTROL" && grant.Grantee.ID != nil {
 			ownerID = *grant.Grantee.ID
 			break
 		}
@@ -965,13 +966,13 @@ func TestE2E_SpecificUserAndEmailGrantees(t *testing.T) {
 	}
 
 	// Upload object
-	_, err = client.PutObject(&s3.PutObjectInput{
+	_, err = client.PutObject(context.Background(), &s3.PutObjectInput{
 		Bucket:      aws.String(bucket),
 		Key:         aws.String(key),
 		Body:        strings.NewReader("test content"),
 		ContentType: aws.String("text/plain"),
-		Metadata: map[string]*string{
-			"test": aws.String("user-email-grants"),
+		Metadata: map[string]string{
+			"test": "user-email-grants",
 		},
 	})
 	if err != nil {
@@ -980,7 +981,7 @@ func TestE2E_SpecificUserAndEmailGrantees(t *testing.T) {
 
 	// Set ACL with specific user ID grants
 	// Note: Email-based grants may not work in all regions/accounts
-	_, err = client.PutObjectAcl(&s3.PutObjectAclInput{
+	_, err = client.PutObjectAcl(context.Background(), &s3.PutObjectAclInput{
 		Bucket:       aws.String(bucket),
 		Key:          aws.String(key),
 		GrantRead:    aws.String(fmt.Sprintf("id=\"%s\"", ownerID)),
@@ -992,13 +993,13 @@ func TestE2E_SpecificUserAndEmailGrantees(t *testing.T) {
 	}
 
 	// Cleanup
-	defer client.DeleteObject(&s3.DeleteObjectInput{
+	defer client.DeleteObject(context.Background(), &s3.DeleteObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(key),
 	})
 
 	// Test overwrite with ACL preservation
-	err = OverwriteS3Object(client, bucket, key, func(info ObjectInfo, srcFilePath string) (string, bool, error) {
+	err = OverwriteS3Object(context.Background(), client, bucket, key, func(info ObjectInfo, srcFilePath string) (string, bool, error) {
 		// Modify content
 		modifiedFile, err := os.CreateTemp("", "e2e-grants-*.txt")
 		if err != nil {
@@ -1022,7 +1023,7 @@ func TestE2E_SpecificUserAndEmailGrantees(t *testing.T) {
 	}
 
 	// Verify ACL is preserved
-	aclResp, err := client.GetObjectAcl(&s3.GetObjectAclInput{
+	aclResp, err := client.GetObjectAcl(context.Background(), &s3.GetObjectAclInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(key),
 	})
@@ -1035,8 +1036,8 @@ func TestE2E_SpecificUserAndEmailGrantees(t *testing.T) {
 	hasUserReadACP := false
 	for _, grant := range aclResp.Grants {
 		if grant.Grantee.ID != nil && *grant.Grantee.ID == ownerID {
-			if grant.Permission != nil {
-				switch *grant.Permission {
+			{
+				switch string(grant.Permission) {
 				case "READ":
 					hasUserRead = true
 				case "READ_ACP":
@@ -1051,7 +1052,7 @@ func TestE2E_SpecificUserAndEmailGrantees(t *testing.T) {
 	}
 
 	// Verify metadata
-	getResp, err := client.GetObject(&s3.GetObjectInput{
+	getResp, err := client.GetObject(context.Background(), &s3.GetObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(key),
 	})
@@ -1060,7 +1061,7 @@ func TestE2E_SpecificUserAndEmailGrantees(t *testing.T) {
 	}
 	defer getResp.Body.Close()
 
-	if val, ok := getResp.Metadata["Modified"]; !ok || *val != "true" {
+	if val, ok := getResp.Metadata["Modified"]; !ok || val != "true" {
 		t.Error("Metadata not updated correctly")
 	}
 }

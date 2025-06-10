@@ -1,6 +1,7 @@
 package overwrite
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/url"
@@ -8,8 +9,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
 // ObjectInfo contains S3 object metadata
@@ -36,22 +38,23 @@ type OverwriteCallback func(info ObjectInfo, srcFilePath string) (overwritingFil
 
 // S3Client is the minimal interface required for overwrite operations
 type S3Client interface {
-	GetObject(input *s3.GetObjectInput) (*s3.GetObjectOutput, error)
-	GetObjectTagging(input *s3.GetObjectTaggingInput) (*s3.GetObjectTaggingOutput, error)
-	GetObjectAcl(input *s3.GetObjectAclInput) (*s3.GetObjectAclOutput, error)
-	PutObject(input *s3.PutObjectInput) (*s3.PutObjectOutput, error)
-	PutObjectAcl(input *s3.PutObjectAclInput) (*s3.PutObjectAclOutput, error)
+	GetObject(ctx context.Context, params *s3.GetObjectInput, optFns ...func(*s3.Options)) (*s3.GetObjectOutput, error)
+	GetObjectTagging(ctx context.Context, params *s3.GetObjectTaggingInput, optFns ...func(*s3.Options)) (*s3.GetObjectTaggingOutput, error)
+	GetObjectAcl(ctx context.Context, params *s3.GetObjectAclInput, optFns ...func(*s3.Options)) (*s3.GetObjectAclOutput, error)
+	PutObject(ctx context.Context, params *s3.PutObjectInput, optFns ...func(*s3.Options)) (*s3.PutObjectOutput, error)
+	PutObjectAcl(ctx context.Context, params *s3.PutObjectAclInput, optFns ...func(*s3.Options)) (*s3.PutObjectAclOutput, error)
 }
 
 // OverwriteS3Object overwrites an S3 object while preserving its existing ACL
 func OverwriteS3Object(
+	ctx context.Context,
 	client S3Client,
 	bucket string,
 	key string,
 	callback OverwriteCallback,
 ) error {
 	// Download object
-	getResp, err := client.GetObject(&s3.GetObjectInput{
+	getResp, err := client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(key),
 	})
@@ -91,9 +94,9 @@ func OverwriteS3Object(
 		ContentLength: getResp.ContentLength,
 		ETag:          getResp.ETag,
 		LastModified:  getResp.LastModified,
-		Metadata:      getResp.Metadata,
-		StorageClass:  getResp.StorageClass,
-		TagCount:      getResp.TagCount,
+		Metadata:      convertMetadataToPointers(getResp.Metadata),
+		StorageClass:  aws.String(string(getResp.StorageClass)),
+		TagCount:      aws.Int64(int64(aws.ToInt32(getResp.TagCount))),
 		VersionId:     getResp.VersionId,
 	}
 
@@ -117,7 +120,7 @@ func OverwriteS3Object(
 	// Get existing tags
 	var tagging *string
 	if getResp.TagCount != nil && *getResp.TagCount > 0 {
-		tagResp, err := client.GetObjectTagging(&s3.GetObjectTaggingInput{
+		tagResp, err := client.GetObjectTagging(ctx, &s3.GetObjectTaggingInput{
 			Bucket: aws.String(bucket),
 			Key:    aws.String(key),
 		})
@@ -132,7 +135,7 @@ func OverwriteS3Object(
 	}
 
 	// Get existing ACL
-	aclResp, err := client.GetObjectAcl(&s3.GetObjectAclInput{
+	aclResp, err := client.GetObjectAcl(ctx, &s3.GetObjectAclInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(key),
 	})
@@ -159,7 +162,7 @@ func OverwriteS3Object(
 		ContentLanguage:         getResp.ContentLanguage,
 		WebsiteRedirectLocation: getResp.WebsiteRedirectLocation,
 		StorageClass:            getResp.StorageClass,
-		Metadata:                info.Metadata, // Use metadata from callback-modified info
+		Metadata:                convertMetadataFromPointers(info.Metadata), // Use metadata from callback-modified info
 		Tagging:                 tagging,
 	}
 
@@ -167,7 +170,7 @@ func OverwriteS3Object(
 	addGrantsToInput(putInput, aclResp.Grants, false)
 
 	// Put object
-	if _, err := client.PutObject(putInput); err != nil {
+	if _, err := client.PutObject(ctx, putInput); err != nil {
 		return fmt.Errorf("failed to put object: %w", err)
 	}
 
@@ -179,7 +182,7 @@ func OverwriteS3Object(
 		}
 		addGrantsToInput(aclInput, aclResp.Grants, true)
 
-		if _, err := client.PutObjectAcl(aclInput); err != nil {
+		if _, err := client.PutObjectAcl(ctx, aclInput); err != nil {
 			return fmt.Errorf("failed to put object ACL: %w", err)
 		}
 	}
@@ -189,6 +192,7 @@ func OverwriteS3Object(
 
 // OverwriteS3ObjectWithAcl overwrites an S3 object with a specific simple ACL
 func OverwriteS3ObjectWithAcl(
+	ctx context.Context,
 	client S3Client,
 	bucket string,
 	key string,
@@ -196,7 +200,7 @@ func OverwriteS3ObjectWithAcl(
 	callback OverwriteCallback,
 ) error {
 	// Download object
-	getResp, err := client.GetObject(&s3.GetObjectInput{
+	getResp, err := client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(key),
 	})
@@ -236,9 +240,9 @@ func OverwriteS3ObjectWithAcl(
 		ContentLength: getResp.ContentLength,
 		ETag:          getResp.ETag,
 		LastModified:  getResp.LastModified,
-		Metadata:      getResp.Metadata,
-		StorageClass:  getResp.StorageClass,
-		TagCount:      getResp.TagCount,
+		Metadata:      convertMetadataToPointers(getResp.Metadata),
+		StorageClass:  aws.String(string(getResp.StorageClass)),
+		TagCount:      aws.Int64(int64(aws.ToInt32(getResp.TagCount))),
 		VersionId:     getResp.VersionId,
 	}
 
@@ -262,7 +266,7 @@ func OverwriteS3ObjectWithAcl(
 	// Get existing tags
 	var tagging *string
 	if getResp.TagCount != nil && *getResp.TagCount > 0 {
-		tagResp, err := client.GetObjectTagging(&s3.GetObjectTaggingInput{
+		tagResp, err := client.GetObjectTagging(ctx, &s3.GetObjectTaggingInput{
 			Bucket: aws.String(bucket),
 			Key:    aws.String(key),
 		})
@@ -288,7 +292,7 @@ func OverwriteS3ObjectWithAcl(
 		Bucket:                  aws.String(bucket),
 		Key:                     aws.String(key),
 		Body:                    uploadFile,
-		ACL:                     aws.String(acl),
+		ACL:                     types.ObjectCannedACL(acl),
 		ContentType:             getResp.ContentType,
 		CacheControl:            getResp.CacheControl,
 		ContentDisposition:      getResp.ContentDisposition,
@@ -296,12 +300,12 @@ func OverwriteS3ObjectWithAcl(
 		ContentLanguage:         getResp.ContentLanguage,
 		WebsiteRedirectLocation: getResp.WebsiteRedirectLocation,
 		StorageClass:            getResp.StorageClass,
-		Metadata:                info.Metadata, // Use metadata from callback-modified info
+		Metadata:                convertMetadataFromPointers(info.Metadata), // Use metadata from callback-modified info
 		Tagging:                 tagging,
 	}
 
 	// Put object
-	if _, err := client.PutObject(putInput); err != nil {
+	if _, err := client.PutObject(ctx, putInput); err != nil {
 		return fmt.Errorf("failed to put object: %w", err)
 	}
 
@@ -309,7 +313,7 @@ func OverwriteS3ObjectWithAcl(
 }
 
 // buildTaggingString converts S3 tags to query string format
-func buildTaggingString(tags []*s3.Tag) string {
+func buildTaggingString(tags []types.Tag) string {
 	if len(tags) == 0 {
 		return ""
 	}
@@ -319,13 +323,13 @@ func buildTaggingString(tags []*s3.Tag) string {
 		if i > 0 {
 			result += "&"
 		}
-		result += url.QueryEscape(aws.StringValue(tag.Key)) + "=" + url.QueryEscape(aws.StringValue(tag.Value))
+		result += url.QueryEscape(aws.ToString(tag.Key)) + "=" + url.QueryEscape(aws.ToString(tag.Value))
 	}
 	return result
 }
 
 // addGrantsToInput adds grant parameters to PutObject or PutObjectAcl input
-func addGrantsToInput(input interface{}, grants []*s3.Grant, includeWrite bool) {
+func addGrantsToInput(input interface{}, grants []types.Grant, includeWrite bool) {
 	readGrants := buildGrantString(grants, "READ")
 	readAcpGrants := buildGrantString(grants, "READ_ACP")
 	writeAcpGrants := buildGrantString(grants, "WRITE_ACP")
@@ -368,10 +372,10 @@ func addGrantsToInput(input interface{}, grants []*s3.Grant, includeWrite bool) 
 }
 
 // buildGrantString builds grant string for specific permission
-func buildGrantString(grants []*s3.Grant, permission string) string {
+func buildGrantString(grants []types.Grant, permission string) string {
 	var grantees []string
 	for _, grant := range grants {
-		if grant.Permission != nil && *grant.Permission == permission {
+		if string(grant.Permission) == permission {
 			if grant.Grantee.ID != nil {
 				grantees = append(grantees, fmt.Sprintf("id=\"%s\"", *grant.Grantee.ID))
 			} else if grant.Grantee.URI != nil {
@@ -388,11 +392,38 @@ func buildGrantString(grants []*s3.Grant, permission string) string {
 }
 
 // hasWriteGrant checks if grants contain WRITE permission
-func hasWriteGrant(grants []*s3.Grant) bool {
+func hasWriteGrant(grants []types.Grant) bool {
 	for _, grant := range grants {
-		if grant.Permission != nil && *grant.Permission == "WRITE" {
+		if grant.Permission == types.PermissionWrite {
 			return true
 		}
 	}
 	return false
+}
+
+// convertMetadataToPointers converts map[string]string to map[string]*string
+func convertMetadataToPointers(metadata map[string]string) map[string]*string {
+	if metadata == nil {
+		return nil
+	}
+	result := make(map[string]*string)
+	for k, v := range metadata {
+		val := v
+		result[k] = &val
+	}
+	return result
+}
+
+// convertMetadataFromPointers converts map[string]*string to map[string]string
+func convertMetadataFromPointers(metadata map[string]*string) map[string]string {
+	if metadata == nil {
+		return nil
+	}
+	result := make(map[string]string)
+	for k, v := range metadata {
+		if v != nil {
+			result[k] = *v
+		}
+	}
+	return result
 }
