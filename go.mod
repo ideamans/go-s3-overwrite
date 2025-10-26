@@ -1,4 +1,4 @@
-module github.com/ideamans/go-s3-overwrite
+module github.com/ideamans/go-s3-overwrite/v2
 
 go 1.22
 

@@ -22,7 +22,7 @@ This package solves this problem by providing two simple functions that automati
 ## Installation
 
 ```bash
-go get github.com/ideamans/go-s3-overwrite
+go get github.com/ideamans/go-s3-overwrite/v2
 ```
 
 ## Usage
@@ -38,10 +38,10 @@ import (
     "log"
     "os"
     "strings"
-    
+
     "github.com/aws/aws-sdk-go-v2/config"
     "github.com/aws/aws-sdk-go-v2/service/s3"
-    overwrite "github.com/ideamans/go-s3-overwrite"
+    overwrite "github.com/ideamans/go-s3-overwrite/v2"
 )
 
 func main() {
@@ -116,11 +116,11 @@ import (
     "fmt"
     "os"
     "time"
-    
+
     "github.com/aws/aws-sdk-go-v2/aws"
     "github.com/aws/aws-sdk-go-v2/config"
     "github.com/aws/aws-sdk-go-v2/service/s3"
-    overwrite "github.com/ideamans/go-s3-overwrite"
+    overwrite "github.com/ideamans/go-s3-overwrite/v2"
 )
 
 // Load AWS configuration
