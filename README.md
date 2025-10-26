@@ -4,6 +4,10 @@
 
 A simple Go package for overwriting S3 objects while preserving their metadata, tags, and ACLs.
 
+## Version 2.0 Breaking Changes
+
+**If you're upgrading from v1.x to v2.0**, please see the [Migration Guide](#migration-from-v1x-to-v20) below.
+
 ## Overview
 
 When you overwrite an S3 object using the standard PutObject operation, AWS S3 internally deletes and recreates the object, causing the loss of:
@@ -49,7 +53,7 @@ func main() {
     svc := s3.NewFromConfig(cfg)
     
     err = overwrite.OverwriteS3Object(context.Background(), svc, "my-bucket", "path/to/file.txt",
-        func(info overwrite.ObjectInfo, srcFilePath string) (string, bool, error) {
+        func(info *overwrite.ObjectInfo, srcFilePath string) (string, bool, error) {
             // Object metadata is available in info
             fmt.Printf("Processing: %s (size: %d bytes)\n", 
                 info.Key, *info.ContentLength)
@@ -90,7 +94,7 @@ func main() {
 
 ```go
 err := overwrite.OverwriteS3ObjectWithAcl(context.Background(), svc, "my-bucket", "public/image.jpg", "public-read",
-    func(info overwrite.ObjectInfo, srcFilePath string) (string, bool, error) {
+    func(info *overwrite.ObjectInfo, srcFilePath string) (string, bool, error) {
         // Skip files larger than 10MB
         if *info.ContentLength > 10*1024*1024 {
             return "", false, nil
@@ -127,7 +131,7 @@ if err != nil {
 svc := s3.NewFromConfig(cfg)
 
 err = overwrite.OverwriteS3Object(context.Background(), svc, "my-bucket", "data/config.json",
-    func(info overwrite.ObjectInfo, srcFilePath string) (string, bool, error) {
+    func(info *overwrite.ObjectInfo, srcFilePath string) (string, bool, error) {
         // Read JSON
         data, err := os.ReadFile(srcFilePath)
         if err != nil {
@@ -242,17 +246,19 @@ type ObjectInfo struct {
 Callback function signature for processing objects.
 
 ```go
-type OverwriteCallback func(info ObjectInfo, srcFilePath string) (overwritingFilePath string, autoRemove bool, err error)
+type OverwriteCallback func(info *ObjectInfo, srcFilePath string) (overwritingFilePath string, autoRemove bool, err error)
 ```
 
 **Parameters:**
-- `info`: Object metadata
+- `info`: Pointer to object metadata. **You can modify fields in ObjectInfo** (e.g., add/update metadata, change ContentType) and the changes will be applied to the uploaded object.
 - `srcFilePath`: Path to the temporary file containing the object's content
 
 **Returns:**
 - `overwritingFilePath`: Path to the file to upload (return empty string "" to skip overwrite)
 - `autoRemove`: If true, the file at `overwritingFilePath` will be automatically removed after upload (only if different from `srcFilePath`)
 - `err`: Any error that occurred during processing
+
+**Note:** In v2.0+, `info` is a pointer, allowing you to modify metadata and other fields within the callback. These modifications will persist when the object is uploaded.
 
 ### S3Client Interface
 
@@ -352,6 +358,99 @@ The E2E tests verify:
 - Multiple grantee types (ID, URI, email)
 - Error handling and edge cases
 - Temporary file cleanup
+
+## Migration from v1.x to v2.0
+
+Version 2.0 introduces a breaking change to enable metadata modification within callbacks.
+
+### What Changed
+
+The `OverwriteCallback` function signature now receives a **pointer** to `ObjectInfo` instead of a value:
+
+**v1.x:**
+```go
+func(info overwrite.ObjectInfo, srcFilePath string) (string, bool, error)
+```
+
+**v2.0:**
+```go
+func(info *overwrite.ObjectInfo, srcFilePath string) (string, bool, error)
+```
+
+### Why This Change?
+
+In v1.x, the callback received `ObjectInfo` by value, meaning any modifications to `info.Metadata` or other fields were lost. The documentation incorrectly suggested that metadata modifications would work.
+
+In v2.0, `info` is a pointer, allowing you to:
+- Add or modify metadata entries
+- Change `ContentType` or other object attributes
+- Have these changes applied when the object is uploaded
+
+### How to Migrate
+
+**Simply add `*` to your callback signatures:**
+
+```diff
+- func(info overwrite.ObjectInfo, srcFilePath string) (string, bool, error) {
++ func(info *overwrite.ObjectInfo, srcFilePath string) (string, bool, error) {
+      // Your code remains the same
+      return srcFilePath, false, nil
+  }
+```
+
+### New Capabilities in v2.0
+
+Now you can modify object metadata within callbacks:
+
+```go
+func(info *overwrite.ObjectInfo, srcFilePath string) (string, bool, error) {
+    // Add processing metadata
+    if info.Metadata == nil {
+        info.Metadata = make(map[string]*string)
+    }
+    info.Metadata["processed"] = aws.String("true")
+    info.Metadata["processed-at"] = aws.String(time.Now().Format(time.RFC3339))
+
+    // Change content type
+    info.ContentType = aws.String("application/json")
+
+    return modifiedFilePath, true, nil
+}
+```
+
+### Additional Examples
+
+**Mark object as processed:**
+```go
+callback := func(info *overwrite.ObjectInfo, srcFilePath string) (string, bool, error) {
+    if info.Metadata == nil {
+        info.Metadata = make(map[string]*string)
+    }
+    info.Metadata["status"] = aws.String("processed")
+    return processedFilePath, false, nil
+}
+```
+
+**Fix incorrect content type:**
+```go
+callback := func(info *overwrite.ObjectInfo, srcFilePath string) (string, bool, error) {
+    // Correct content type for JSON files
+    info.ContentType = aws.String("application/json; charset=utf-8")
+    return srcFilePath, false, nil
+}
+```
+
+**Add version tracking:**
+```go
+callback := func(info *overwrite.ObjectInfo, srcFilePath string) (string, bool, error) {
+    if info.Metadata == nil {
+        info.Metadata = make(map[string]*string)
+    }
+    info.Metadata["version"] = aws.String("2.0")
+    info.Metadata["updated-by"] = aws.String("image-processor")
+    return newFilePath, false, nil
+}
+```
 
 ## Contributing
 

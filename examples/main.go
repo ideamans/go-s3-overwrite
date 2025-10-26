@@ -28,7 +28,7 @@ func main() {
 
 	// Example: Format JSON file and preserve all attributes
 	err = overwrite.OverwriteS3Object(context.Background(), svc, bucket, key,
-		func(info overwrite.ObjectInfo, srcFilePath string) (string, bool, error) {
+		func(info *overwrite.ObjectInfo, srcFilePath string) (string, bool, error) {
 			fmt.Printf("Processing: %s/%s (size: %d bytes)\n",
 				info.Bucket, info.Key, *info.ContentLength)
 
@@ -87,7 +87,7 @@ func main() {
 	// Example 2: Set public-read ACL while preserving tags
 	publicKey := "public/data.json"
 	err = overwrite.OverwriteS3ObjectWithAcl(context.Background(), svc, bucket, publicKey, "public-read",
-		func(info overwrite.ObjectInfo, srcFilePath string) (string, bool, error) {
+		func(info *overwrite.ObjectInfo, srcFilePath string) (string, bool, error) {
 			fmt.Printf("Making public: %s/%s\n", info.Bucket, info.Key)
 
 			// Just changing ACL, no content modification needed
@@ -131,7 +131,7 @@ func processLogs(svc *s3.Client, bucket, prefix string) {
 		}
 
 		err := overwrite.OverwriteS3Object(context.Background(), svc, bucket, *obj.Key,
-			func(info overwrite.ObjectInfo, srcFilePath string) (string, bool, error) {
+			func(info *overwrite.ObjectInfo, srcFilePath string) (string, bool, error) {
 				// Example: Add processing timestamp to logs
 				content, err := os.ReadFile(srcFilePath)
 				if err != nil {

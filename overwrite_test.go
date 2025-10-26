@@ -112,7 +112,7 @@ func TestOverwriteS3Object_Success(t *testing.T) {
 	}
 
 	callbackCalled := false
-	err := OverwriteS3Object(context.Background(), client, "test-bucket", "test-key", func(info ObjectInfo, srcFilePath string) (string, bool, error) {
+	err := OverwriteS3Object(context.Background(), client, "test-bucket", "test-key", func(info *ObjectInfo, srcFilePath string) (string, bool, error) {
 		callbackCalled = true
 
 		// Verify ObjectInfo
@@ -174,7 +174,7 @@ func TestOverwriteS3Object_Skip(t *testing.T) {
 		},
 	}
 
-	err := OverwriteS3Object(context.Background(), client, "test-bucket", "test-key", func(info ObjectInfo, srcFilePath string) (string, bool, error) {
+	err := OverwriteS3Object(context.Background(), client, "test-bucket", "test-key", func(info *ObjectInfo, srcFilePath string) (string, bool, error) {
 		// Return empty string to skip overwrite
 		return "", false, nil
 	})
@@ -225,7 +225,7 @@ func TestOverwriteS3Object_WithWritePermission(t *testing.T) {
 		},
 	}
 
-	err := OverwriteS3Object(context.Background(), client, "test-bucket", "test-key", func(info ObjectInfo, srcFilePath string) (string, bool, error) {
+	err := OverwriteS3Object(context.Background(), client, "test-bucket", "test-key", func(info *ObjectInfo, srcFilePath string) (string, bool, error) {
 		// Return the same file to overwrite
 		return srcFilePath, false, nil
 	})
@@ -318,7 +318,7 @@ func TestOverwriteS3Object_Errors(t *testing.T) {
 			client := &mockS3Client{}
 			tt.setupMock(client)
 
-			err := OverwriteS3Object(context.Background(), client, "bucket", "key", func(info ObjectInfo, srcFilePath string) (string, bool, error) {
+			err := OverwriteS3Object(context.Background(), client, "bucket", "key", func(info *ObjectInfo, srcFilePath string) (string, bool, error) {
 				if tt.name == "Callback error" {
 					return "", false, errors.New("callback failed")
 				}
@@ -372,7 +372,7 @@ func TestOverwriteS3ObjectWithAcl_Success(t *testing.T) {
 				},
 			}
 
-			err := OverwriteS3ObjectWithAcl(context.Background(), client, "test-bucket", "test-key", acl, func(info ObjectInfo, srcFilePath string) (string, bool, error) {
+			err := OverwriteS3ObjectWithAcl(context.Background(), client, "test-bucket", "test-key", acl, func(info *ObjectInfo, srcFilePath string) (string, bool, error) {
 				// Create a new file with modified content
 				modifiedFile, err := os.CreateTemp("", "modified-*.tmp")
 				if err != nil {
@@ -411,7 +411,7 @@ func TestOverwriteS3ObjectWithAcl_Skip(t *testing.T) {
 		},
 	}
 
-	err := OverwriteS3ObjectWithAcl(context.Background(), client, "test-bucket", "test-key", "private", func(info ObjectInfo, srcFilePath string) (string, bool, error) {
+	err := OverwriteS3ObjectWithAcl(context.Background(), client, "test-bucket", "test-key", "private", func(info *ObjectInfo, srcFilePath string) (string, bool, error) {
 		// Return empty string to skip overwrite
 		return "", false, nil
 	})
@@ -443,7 +443,7 @@ func TestAutoRemove(t *testing.T) {
 	}
 
 	// Test with autoRemove = true
-	err := OverwriteS3Object(context.Background(), client, "test-bucket", "test-key", func(info ObjectInfo, srcFilePath string) (string, bool, error) {
+	err := OverwriteS3Object(context.Background(), client, "test-bucket", "test-key", func(info *ObjectInfo, srcFilePath string) (string, bool, error) {
 		// Create a new temporary file
 		tmpFile, err := os.CreateTemp("", "autoremove-test-*.tmp")
 		if err != nil {
@@ -472,7 +472,7 @@ func TestAutoRemove(t *testing.T) {
 	}
 
 	// Test with autoRemove = false
-	err = OverwriteS3Object(context.Background(), client, "test-bucket", "test-key", func(info ObjectInfo, srcFilePath string) (string, bool, error) {
+	err = OverwriteS3Object(context.Background(), client, "test-bucket", "test-key", func(info *ObjectInfo, srcFilePath string) (string, bool, error) {
 		// Create a new temporary file
 		tmpFile, err := os.CreateTemp("", "no-autoremove-test-*.tmp")
 		if err != nil {
@@ -540,7 +540,7 @@ func TestAutoRemoveEdgeCases(t *testing.T) {
 			},
 		}
 		
-		err := OverwriteS3Object(context.Background(), testClient, "test-bucket", "test-key", func(info ObjectInfo, srcFilePath string) (string, bool, error) {
+		err := OverwriteS3Object(context.Background(), testClient, "test-bucket", "test-key", func(info *ObjectInfo, srcFilePath string) (string, bool, error) {
 			originalPath = srcFilePath
 			// Return the same file path with autoRemove=true
 			return srcFilePath, true, nil
@@ -558,7 +558,7 @@ func TestAutoRemoveEdgeCases(t *testing.T) {
 
 	t.Run("autoRemove with empty path", func(t *testing.T) {
 		// Test that autoRemove=true with empty path doesn't cause issues
-		err := OverwriteS3Object(context.Background(), client, "test-bucket", "test-key", func(info ObjectInfo, srcFilePath string) (string, bool, error) {
+		err := OverwriteS3Object(context.Background(), client, "test-bucket", "test-key", func(info *ObjectInfo, srcFilePath string) (string, bool, error) {
 			// Return empty path (skip) with autoRemove=true
 			return "", true, nil
 		})
@@ -571,7 +571,7 @@ func TestAutoRemoveEdgeCases(t *testing.T) {
 	t.Run("autoRemove in OverwriteS3ObjectWithAcl", func(t *testing.T) {
 		// Test autoRemove functionality in OverwriteS3ObjectWithAcl
 		var createdFilePath string
-		err := OverwriteS3ObjectWithAcl(context.Background(), client, "test-bucket", "test-key", "private", func(info ObjectInfo, srcFilePath string) (string, bool, error) {
+		err := OverwriteS3ObjectWithAcl(context.Background(), client, "test-bucket", "test-key", "private", func(info *ObjectInfo, srcFilePath string) (string, bool, error) {
 			// Create a new temporary file
 			tmpFile, err := os.CreateTemp("", "acl-autoremove-test-*.tmp")
 			if err != nil {
@@ -619,7 +619,7 @@ func TestAutoRemoveEdgeCases(t *testing.T) {
 			},
 		}
 		
-		err := OverwriteS3Object(context.Background(), testClient, "test-bucket", "test-key", func(info ObjectInfo, srcFilePath string) (string, bool, error) {
+		err := OverwriteS3Object(context.Background(), testClient, "test-bucket", "test-key", func(info *ObjectInfo, srcFilePath string) (string, bool, error) {
 			// Create a new temporary file
 			tmpFile, err := os.CreateTemp("", "upload-timing-test-*.tmp")
 			if err != nil {
@@ -672,7 +672,7 @@ func TestTemporaryFileCleanup(t *testing.T) {
 	}
 
 	// Test successful case - temp file should be cleaned up
-	err := OverwriteS3Object(context.Background(), client, "test-bucket", "test-key", func(info ObjectInfo, srcFilePath string) (string, bool, error) {
+	err := OverwriteS3Object(context.Background(), client, "test-bucket", "test-key", func(info *ObjectInfo, srcFilePath string) (string, bool, error) {
 		tmpFileName = srcFilePath
 		return srcFilePath, false, nil
 	})
@@ -687,7 +687,7 @@ func TestTemporaryFileCleanup(t *testing.T) {
 	}
 
 	// Test error case - temp file should still be cleaned up
-	err = OverwriteS3Object(context.Background(), client, "test-bucket", "test-key", func(info ObjectInfo, srcFilePath string) (string, bool, error) {
+	err = OverwriteS3Object(context.Background(), client, "test-bucket", "test-key", func(info *ObjectInfo, srcFilePath string) (string, bool, error) {
 		tmpFileName = srcFilePath
 		return "", false, errors.New("intentional error")
 	})
@@ -702,6 +702,158 @@ func TestTemporaryFileCleanup(t *testing.T) {
 	}
 }
 
+
+// Test that callback can modify ObjectInfo metadata and it persists
+func TestCallbackCanModifyMetadata(t *testing.T) {
+	var capturedMetadata map[string]string
+	newMetadataValue := "test-value-123"
+	modifiedContentType := "application/json"
+
+	client := &mockS3Client{
+		getObjectFunc: func(ctx context.Context, input *s3.GetObjectInput) (*s3.GetObjectOutput, error) {
+			return &s3.GetObjectOutput{
+				Body:        io.NopCloser(strings.NewReader("test")),
+				ContentType: aws.String("text/plain"),
+				Metadata: map[string]string{
+					"original": "true",
+				},
+			}, nil
+		},
+		getObjectAclFunc: func(ctx context.Context, input *s3.GetObjectAclInput) (*s3.GetObjectAclOutput, error) {
+			return &s3.GetObjectAclOutput{}, nil
+		},
+		putObjectFunc: func(ctx context.Context, input *s3.PutObjectInput) (*s3.PutObjectOutput, error) {
+			// Capture the metadata that was actually used in PutObject
+			capturedMetadata = input.Metadata
+			return &s3.PutObjectOutput{}, nil
+		},
+	}
+
+	err := OverwriteS3Object(context.Background(), client, "bucket", "key", func(info *ObjectInfo, srcFilePath string) (string, bool, error) {
+		// Verify we received the original metadata
+		if val, ok := info.Metadata["original"]; !ok || *val != "true" {
+			t.Error("Expected original metadata in callback")
+		}
+
+		// Add new metadata
+		if info.Metadata == nil {
+			info.Metadata = make(map[string]*string)
+		}
+		info.Metadata["test-key"] = aws.String(newMetadataValue)
+		info.Metadata["processed"] = aws.String("true")
+
+		// Modify ContentType
+		info.ContentType = aws.String(modifiedContentType)
+
+		return srcFilePath, false, nil
+	})
+
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Verify the modified metadata was passed to PutObject
+	if capturedMetadata == nil {
+		t.Fatal("PutObject was not called")
+	}
+
+	if val, ok := capturedMetadata["test-key"]; !ok || val != newMetadataValue {
+		t.Errorf("Expected metadata 'test-key' = '%s', got %v", newMetadataValue, capturedMetadata)
+	}
+
+	if val, ok := capturedMetadata["processed"]; !ok || val != "true" {
+		t.Error("Expected metadata 'processed' = 'true' to be present")
+	}
+
+	if val, ok := capturedMetadata["original"]; !ok || val != "true" {
+		t.Error("Expected original metadata to be preserved")
+	}
+}
+
+// Test that callback can modify ContentType and it persists
+func TestCallbackCanModifyContentType(t *testing.T) {
+	var capturedContentType *string
+
+	client := &mockS3Client{
+		getObjectFunc: func(ctx context.Context, input *s3.GetObjectInput) (*s3.GetObjectOutput, error) {
+			return &s3.GetObjectOutput{
+				Body:        io.NopCloser(strings.NewReader("test")),
+				ContentType: aws.String("text/plain"),
+			}, nil
+		},
+		getObjectAclFunc: func(ctx context.Context, input *s3.GetObjectAclInput) (*s3.GetObjectAclOutput, error) {
+			return &s3.GetObjectAclOutput{}, nil
+		},
+		putObjectFunc: func(ctx context.Context, input *s3.PutObjectInput) (*s3.PutObjectOutput, error) {
+			capturedContentType = input.ContentType
+			return &s3.PutObjectOutput{}, nil
+		},
+	}
+
+	modifiedContentType := "application/json; charset=utf-8"
+	err := OverwriteS3Object(context.Background(), client, "bucket", "key", func(info *ObjectInfo, srcFilePath string) (string, bool, error) {
+		// Verify original ContentType
+		if *info.ContentType != "text/plain" {
+			t.Errorf("Expected original ContentType 'text/plain', got '%s'", *info.ContentType)
+		}
+
+		// Modify ContentType
+		info.ContentType = aws.String(modifiedContentType)
+
+		return srcFilePath, false, nil
+	})
+
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	// Verify the modified ContentType was used
+	if capturedContentType == nil {
+		t.Fatal("ContentType was not set in PutObject")
+	}
+
+	if *capturedContentType != modifiedContentType {
+		t.Errorf("Expected ContentType '%s', got '%s'", modifiedContentType, *capturedContentType)
+	}
+}
+
+// Test that callback can modify ObjectInfo in OverwriteS3ObjectWithAcl
+func TestCallbackCanModifyMetadataWithAcl(t *testing.T) {
+	var capturedMetadata map[string]string
+
+	client := &mockS3Client{
+		getObjectFunc: func(ctx context.Context, input *s3.GetObjectInput) (*s3.GetObjectOutput, error) {
+			return &s3.GetObjectOutput{
+				Body: io.NopCloser(strings.NewReader("test")),
+				Metadata: map[string]string{
+					"original": "value",
+				},
+			}, nil
+		},
+		putObjectFunc: func(ctx context.Context, input *s3.PutObjectInput) (*s3.PutObjectOutput, error) {
+			capturedMetadata = input.Metadata
+			return &s3.PutObjectOutput{}, nil
+		},
+	}
+
+	err := OverwriteS3ObjectWithAcl(context.Background(), client, "bucket", "key", "private", func(info *ObjectInfo, srcFilePath string) (string, bool, error) {
+		// Add new metadata
+		if info.Metadata == nil {
+			info.Metadata = make(map[string]*string)
+		}
+		info.Metadata["acl-test"] = aws.String("modified")
+
+		return srcFilePath, false, nil
+	})
+
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+
+	if val, ok := capturedMetadata["acl-test"]; !ok || val != "modified" {
+		t.Error("Metadata modification did not persist in OverwriteS3ObjectWithAcl")
+	}
+}
 
 // Test buildTaggingString
 func TestBuildTaggingString(t *testing.T) {

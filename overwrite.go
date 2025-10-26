@@ -29,12 +29,13 @@ type ObjectInfo struct {
 }
 
 // OverwriteCallback defines the callback function signature
-// The callback receives object info and the path to the source file.
+// The callback receives a pointer to object info and the path to the source file.
+// The callback can modify the ObjectInfo (e.g., add/modify metadata, change ContentType).
 // It returns:
 // - overwritingFilePath: the path to the file to upload (empty string to skip overwrite)
 // - autoRemove: if true, the file will be automatically removed after upload (only if different from srcFilePath)
 // - err: any error that occurred
-type OverwriteCallback func(info ObjectInfo, srcFilePath string) (overwritingFilePath string, autoRemove bool, err error)
+type OverwriteCallback func(info *ObjectInfo, srcFilePath string) (overwritingFilePath string, autoRemove bool, err error)
 
 // S3Client is the minimal interface required for overwrite operations
 type S3Client interface {
@@ -100,8 +101,8 @@ func OverwriteS3Object(
 		VersionId:     getResp.VersionId,
 	}
 
-	// Call callback with temp file path
-	overwritingFilePath, autoRemove, err := callback(info, tmpFile.Name())
+	// Call callback with temp file path (pass pointer to allow modifications)
+	overwritingFilePath, autoRemove, err := callback(&info, tmpFile.Name())
 	if err != nil {
 		return fmt.Errorf("callback error: %w", err)
 	}
@@ -155,7 +156,7 @@ func OverwriteS3Object(
 		Bucket:                  aws.String(bucket),
 		Key:                     aws.String(key),
 		Body:                    uploadFile,
-		ContentType:             getResp.ContentType,
+		ContentType:             info.ContentType, // Use ContentType from callback-modified info
 		CacheControl:            getResp.CacheControl,
 		ContentDisposition:      getResp.ContentDisposition,
 		ContentEncoding:         getResp.ContentEncoding,
@@ -246,8 +247,8 @@ func OverwriteS3ObjectWithAcl(
 		VersionId:     getResp.VersionId,
 	}
 
-	// Call callback with temp file path
-	overwritingFilePath, autoRemove, err := callback(info, tmpFile.Name())
+	// Call callback with temp file path (pass pointer to allow modifications)
+	overwritingFilePath, autoRemove, err := callback(&info, tmpFile.Name())
 	if err != nil {
 		return fmt.Errorf("callback error: %w", err)
 	}
@@ -293,7 +294,7 @@ func OverwriteS3ObjectWithAcl(
 		Key:                     aws.String(key),
 		Body:                    uploadFile,
 		ACL:                     types.ObjectCannedACL(acl),
-		ContentType:             getResp.ContentType,
+		ContentType:             info.ContentType, // Use ContentType from callback-modified info
 		CacheControl:            getResp.CacheControl,
 		ContentDisposition:      getResp.ContentDisposition,
 		ContentEncoding:         getResp.ContentEncoding,

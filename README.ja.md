@@ -4,6 +4,10 @@
 
 S3オブジェクトのメタデータ、タグ、ACLを保持しながら上書きするシンプルなGoパッケージです。
 
+## バージョン2.0の破壊的変更
+
+**v1.xからv2.0へアップグレードする場合**は、下記の[マイグレーションガイド](#v1xからv20へのマイグレーション)をご覧ください。
+
 ## 概要
 
 標準のPutObject操作でS3オブジェクトを上書きすると、AWS S3は内部的にオブジェクトを削除して再作成するため、以下の情報が失われます：
@@ -49,7 +53,7 @@ func main() {
     svc := s3.NewFromConfig(cfg)
     
     err = overwrite.OverwriteS3Object(context.Background(), svc, "my-bucket", "path/to/file.txt",
-        func(info overwrite.ObjectInfo, srcFilePath string) (string, bool, error) {
+        func(info *overwrite.ObjectInfo, srcFilePath string) (string, bool, error) {
             // オブジェクトのメタデータはinfoで利用可能
             fmt.Printf("処理中: %s (サイズ: %d バイト)\n", 
                 info.Key, *info.ContentLength)
@@ -90,7 +94,7 @@ func main() {
 
 ```go
 err := overwrite.OverwriteS3ObjectWithAcl(context.Background(), svc, "my-bucket", "public/image.jpg", "public-read",
-    func(info overwrite.ObjectInfo, srcFilePath string) (string, bool, error) {
+    func(info *overwrite.ObjectInfo, srcFilePath string) (string, bool, error) {
         // 10MBより大きいファイルはスキップ
         if *info.ContentLength > 10*1024*1024 {
             return "", false, nil
@@ -127,7 +131,7 @@ if err != nil {
 svc := s3.NewFromConfig(cfg)
 
 err = overwrite.OverwriteS3Object(context.Background(), svc, "my-bucket", "data/config.json",
-    func(info overwrite.ObjectInfo, srcFilePath string) (string, bool, error) {
+    func(info *overwrite.ObjectInfo, srcFilePath string) (string, bool, error) {
         // JSONを読み込み
         data, err := os.ReadFile(srcFilePath)
         if err != nil {
@@ -244,12 +248,12 @@ type ObjectInfo struct {
 オブジェクトを処理するコールバック関数のシグネチャです。
 
 ```go
-type OverwriteCallback func(info ObjectInfo, srcFilePath string) (overwritingFilePath string, autoRemove bool, err error)
+type OverwriteCallback func(info *ObjectInfo, srcFilePath string) (overwritingFilePath string, autoRemove bool, err error)
 ```
 
 **パラメータ:**
 
-- `info`: オブジェクトのメタデータ
+- `info`: オブジェクトのメタデータへのポインタ。**ObjectInfoのフィールドを変更できます**（例：メタデータの追加・更新、ContentTypeの変更）。変更はアップロードされるオブジェクトに反映されます。
 - `srcFilePath`: オブジェクトの内容を含む一時ファイルへのパス
 
 **戻り値:**
@@ -257,6 +261,8 @@ type OverwriteCallback func(info ObjectInfo, srcFilePath string) (overwritingFil
 - `overwritingFilePath`: アップロードするファイルのパス（空文字列""を返すと上書きをスキップ）
 - `autoRemove`: trueの場合、`overwritingFilePath`のファイルはアップロード後に自動的に削除されます（`srcFilePath`と異なる場合のみ）
 - `err`: 処理中に発生したエラー
+
+**注意:** v2.0以降、`info`はポインタであるため、コールバック内でメタデータやその他のフィールドを変更できます。これらの変更はオブジェクトがアップロードされる際に永続化されます。
 
 ### S3Clientインターフェース
 
@@ -356,6 +362,99 @@ E2Eテストは以下を検証します：
 - 複数のグランティータイプ（ID、URI、メール）
 - エラー処理とエッジケース
 - 一時ファイルのクリーンアップ
+
+## v1.xからv2.0へのマイグレーション
+
+バージョン2.0では、コールバック内でのメタデータ変更を可能にするための破壊的変更が導入されました。
+
+### 変更内容
+
+`OverwriteCallback`関数のシグネチャが、`ObjectInfo`の値ではなく**ポインタ**を受け取るように変更されました：
+
+**v1.x:**
+```go
+func(info overwrite.ObjectInfo, srcFilePath string) (string, bool, error)
+```
+
+**v2.0:**
+```go
+func(info *overwrite.ObjectInfo, srcFilePath string) (string, bool, error)
+```
+
+### なぜこの変更が必要か？
+
+v1.xでは、コールバックは`ObjectInfo`を値で受け取っていたため、`info.Metadata`やその他のフィールドへの変更は失われていました。ドキュメントではメタデータの変更が可能であると誤って示唆していました。
+
+v2.0では、`info`はポインタであるため、以下が可能になります：
+- メタデータエントリの追加または変更
+- `ContentType`やその他のオブジェクト属性の変更
+- これらの変更がオブジェクトのアップロード時に適用される
+
+### マイグレーション方法
+
+**コールバックのシグネチャに`*`を追加するだけです：**
+
+```diff
+- func(info overwrite.ObjectInfo, srcFilePath string) (string, bool, error) {
++ func(info *overwrite.ObjectInfo, srcFilePath string) (string, bool, error) {
+      // コードはそのまま
+      return srcFilePath, false, nil
+  }
+```
+
+### v2.0の新機能
+
+コールバック内でオブジェクトのメタデータを変更できるようになりました：
+
+```go
+func(info *overwrite.ObjectInfo, srcFilePath string) (string, bool, error) {
+    // 処理メタデータを追加
+    if info.Metadata == nil {
+        info.Metadata = make(map[string]*string)
+    }
+    info.Metadata["processed"] = aws.String("true")
+    info.Metadata["processed-at"] = aws.String(time.Now().Format(time.RFC3339))
+
+    // コンテンツタイプを変更
+    info.ContentType = aws.String("application/json")
+
+    return modifiedFilePath, true, nil
+}
+```
+
+### その他の例
+
+**オブジェクトを処理済みとしてマーク:**
+```go
+callback := func(info *overwrite.ObjectInfo, srcFilePath string) (string, bool, error) {
+    if info.Metadata == nil {
+        info.Metadata = make(map[string]*string)
+    }
+    info.Metadata["status"] = aws.String("processed")
+    return processedFilePath, false, nil
+}
+```
+
+**間違ったコンテンツタイプを修正:**
+```go
+callback := func(info *overwrite.ObjectInfo, srcFilePath string) (string, bool, error) {
+    // JSONファイルのコンテンツタイプを修正
+    info.ContentType = aws.String("application/json; charset=utf-8")
+    return srcFilePath, false, nil
+}
+```
+
+**バージョン追跡の追加:**
+```go
+callback := func(info *overwrite.ObjectInfo, srcFilePath string) (string, bool, error) {
+    if info.Metadata == nil {
+        info.Metadata = make(map[string]*string)
+    }
+    info.Metadata["version"] = aws.String("2.0")
+    info.Metadata["updated-by"] = aws.String("image-processor")
+    return newFilePath, false, nil
+}
+```
 
 ## コントリビューション
 

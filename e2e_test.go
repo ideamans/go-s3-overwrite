@@ -95,7 +95,7 @@ func TestE2E_OverwriteS3Object(t *testing.T) {
 	})
 
 	// Test overwrite with ACL preservation
-	err = OverwriteS3Object(context.Background(), client, bucket, key, func(info ObjectInfo, srcFilePath string) (string, bool, error) {
+	err = OverwriteS3Object(context.Background(), client, bucket, key, func(info *ObjectInfo, srcFilePath string) (string, bool, error) {
 		// Verify original content
 		content, err := os.ReadFile(srcFilePath)
 		if err != nil {
@@ -268,7 +268,7 @@ func TestE2E_OverwriteS3ObjectWithAcl(t *testing.T) {
 	})
 
 	// Test overwrite preserving private ACL
-	err = OverwriteS3ObjectWithAcl(context.Background(), client, bucket, key, "private", func(info ObjectInfo, srcFilePath string) (string, bool, error) {
+	err = OverwriteS3ObjectWithAcl(context.Background(), client, bucket, key, "private", func(info *ObjectInfo, srcFilePath string) (string, bool, error) {
 		// Read and parse JSON
 		data, err := os.ReadFile(srcFilePath)
 		if err != nil {
@@ -403,7 +403,7 @@ func TestE2E_SkipLargeFiles(t *testing.T) {
 	})
 
 	callbackCalled := false
-	err = OverwriteS3Object(context.Background(), client, bucket, key, func(info ObjectInfo, srcFilePath string) (string, bool, error) {
+	err = OverwriteS3Object(context.Background(), client, bucket, key, func(info *ObjectInfo, srcFilePath string) (string, bool, error) {
 		callbackCalled = true
 
 		// Simulate size check - skip if content length > 10 bytes
@@ -444,7 +444,7 @@ func TestE2E_ErrorHandling(t *testing.T) {
 	bucket := os.Getenv("TEST_BUCKET")
 
 	// Test with non-existent object
-	err := OverwriteS3Object(context.Background(), client, bucket, "non-existent-key", func(info ObjectInfo, srcFilePath string) (string, bool, error) {
+	err := OverwriteS3Object(context.Background(), client, bucket, "non-existent-key", func(info *ObjectInfo, srcFilePath string) (string, bool, error) {
 		t.Error("Callback should not be called for non-existent object")
 		return srcFilePath, false, nil
 	})
@@ -469,7 +469,7 @@ func TestE2E_ErrorHandling(t *testing.T) {
 		Key:    aws.String(key),
 	})
 
-	err = OverwriteS3Object(context.Background(), client, bucket, key, func(info ObjectInfo, srcFilePath string) (string, bool, error) {
+	err = OverwriteS3Object(context.Background(), client, bucket, key, func(info *ObjectInfo, srcFilePath string) (string, bool, error) {
 		return "", false, fmt.Errorf("simulated callback error")
 	})
 
@@ -504,7 +504,7 @@ func TestE2E_TempFileCleanup(t *testing.T) {
 	var tempFiles []string
 
 	// Test successful case
-	err = OverwriteS3Object(context.Background(), client, bucket, key, func(info ObjectInfo, srcFilePath string) (string, bool, error) {
+	err = OverwriteS3Object(context.Background(), client, bucket, key, func(info *ObjectInfo, srcFilePath string) (string, bool, error) {
 		tempFiles = append(tempFiles, srcFilePath)
 		return srcFilePath, false, nil
 	})
@@ -522,7 +522,7 @@ func TestE2E_TempFileCleanup(t *testing.T) {
 
 	// Test error case
 	tempFiles = nil
-	err = OverwriteS3Object(context.Background(), client, bucket, key, func(info ObjectInfo, srcFilePath string) (string, bool, error) {
+	err = OverwriteS3Object(context.Background(), client, bucket, key, func(info *ObjectInfo, srcFilePath string) (string, bool, error) {
 		tempFiles = append(tempFiles, srcFilePath)
 		return "", false, fmt.Errorf("force cleanup test")
 	})
@@ -576,7 +576,7 @@ func TestE2E_ComplexACLPreservation(t *testing.T) {
 	})
 
 	// Test overwrite with ACL preservation
-	err = OverwriteS3Object(context.Background(), client, bucket, key, func(info ObjectInfo, srcFilePath string) (string, bool, error) {
+	err = OverwriteS3Object(context.Background(), client, bucket, key, func(info *ObjectInfo, srcFilePath string) (string, bool, error) {
 		// Modify content to new file
 		modifiedFile, err := os.CreateTemp("", "e2e-complex-acl-*.txt")
 		if err != nil {
@@ -667,7 +667,7 @@ func TestE2E_PublicPrivateACLSwitch(t *testing.T) {
 	})
 
 	// Switch to private
-	err = OverwriteS3ObjectWithAcl(context.Background(), client, bucket, key, "private", func(info ObjectInfo, srcFilePath string) (string, bool, error) {
+	err = OverwriteS3ObjectWithAcl(context.Background(), client, bucket, key, "private", func(info *ObjectInfo, srcFilePath string) (string, bool, error) {
 		// Update content
 		modifiedFile, err := os.CreateTemp("", "e2e-private-*.txt")
 		if err != nil {
@@ -722,7 +722,7 @@ func TestE2E_PublicPrivateACLSwitch(t *testing.T) {
 	}
 
 	// Switch back to public-read
-	err = OverwriteS3ObjectWithAcl(context.Background(), client, bucket, key, "public-read", func(info ObjectInfo, srcFilePath string) (string, bool, error) {
+	err = OverwriteS3ObjectWithAcl(context.Background(), client, bucket, key, "public-read", func(info *ObjectInfo, srcFilePath string) (string, bool, error) {
 		// Change content again
 		modifiedFile, err := os.CreateTemp("", "e2e-public-*.txt")
 		if err != nil {
@@ -791,7 +791,7 @@ func TestE2E_MetadataAndTagsWithSpecialCharacters(t *testing.T) {
 	})
 
 	// Overwrite while preserving special characters
-	err = OverwriteS3Object(context.Background(), client, bucket, key, func(info ObjectInfo, srcFilePath string) (string, bool, error) {
+	err = OverwriteS3Object(context.Background(), client, bucket, key, func(info *ObjectInfo, srcFilePath string) (string, bool, error) {
 		// Add more metadata
 		info.Metadata["path"] = aws.String("/path/to/file")
 		info.Metadata["status"] = aws.String("processed")
@@ -899,7 +899,7 @@ func TestE2E_LargeMetadataAndManyTags(t *testing.T) {
 	})
 
 	// Overwrite and add more metadata
-	err = OverwriteS3Object(context.Background(), client, bucket, key, func(info ObjectInfo, srcFilePath string) (string, bool, error) {
+	err = OverwriteS3Object(context.Background(), client, bucket, key, func(info *ObjectInfo, srcFilePath string) (string, bool, error) {
 		// Add additional metadata
 		info.Metadata["processed"] = aws.String("true")
 		info.Metadata["timestamp"] = aws.String(time.Now().Format(time.RFC3339))
@@ -999,7 +999,7 @@ func TestE2E_SpecificUserAndEmailGrantees(t *testing.T) {
 	})
 
 	// Test overwrite with ACL preservation
-	err = OverwriteS3Object(context.Background(), client, bucket, key, func(info ObjectInfo, srcFilePath string) (string, bool, error) {
+	err = OverwriteS3Object(context.Background(), client, bucket, key, func(info *ObjectInfo, srcFilePath string) (string, bool, error) {
 		// Modify content
 		modifiedFile, err := os.CreateTemp("", "e2e-grants-*.txt")
 		if err != nil {
